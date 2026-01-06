@@ -1,0 +1,22 @@
+# ============== Core Framework ==============
+streamlit==1.52.1
+
+# ============== Database ==============
+psycopg2-binary==2.9.11
+SQLAlchemy==2.0.45
+
+# ============== Data Processing ==============
+pandas==2.3.3
+numpy==2.2.1
+
+# ============== Date & Time ==============
+python-dateutil==2.9.0
+pytz==2025.2
+
+# ============== Utilities ==============
+python-dotenv==1.0.1  # 環境變數管理 (開發用)
+
+# ============== Optional: Monitoring ==============
+# sentry-sdk==2.23.0  # 錯誤監控 (生產環境建議啟用)
+# Excel 匯出功能 (可選)
+openpyxl==3.1.2

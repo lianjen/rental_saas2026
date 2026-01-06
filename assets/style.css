@@ -1,0 +1,128 @@
+/* assets/style.css */
+
+/* Google Fonts Import: 引入 Noto Sans TC 以確保繁體中文美感 */
+@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700&family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+
+:root {
+    --bg-color: #F9F9F7;
+    --primary-color: #5F8D78;       /* Sage Green */
+    --secondary-color: #4A4A4A;     /* Soft Charcoal */
+    --accent-color: #E07A5F;        /* Terracotta */
+    --card-bg: #FFFFFF;
+    --shadow-soft: 0 4px 20px rgba(0,0,0,0.05);
+    --shadow-hover: 0 8px 25px rgba(0,0,0,0.08);
+    --radius: 16px;
+}
+
+/* 全域設定 */
+.stApp {
+    background-color: var(--bg-color);
+    font-family: 'Lato', 'Noto Sans TC', sans-serif;
+    color: var(--secondary-color);
+}
+
+/* 隱藏 Streamlit 預設元素 */
+#MainMenu {visibility: hidden;}
+header {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* 側邊欄優化 */
+[data-testid="stSidebar"] {
+    background-color: #FFFFFF;
+    border-right: 1px solid #EAEaea;
+    box-shadow: var(--shadow-soft);
+}
+
+[data-testid="stSidebar"] h1 {
+    color: var(--primary-color) !important;
+    font-weight: 700 !important;
+}
+
+/* 按鈕樣式重塑 */
+.stButton > button {
+    background-color: var(--primary-color);
+    color: white;
+    border-radius: var(--radius);
+    border: none;
+    padding: 0.5rem 1rem;
+    transition: all 0.3s ease;
+    font-weight: 500;
+}
+
+.stButton > button:hover {
+    background-color: #4C7362; /* Darker Sage */
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-hover);
+    color: white;
+}
+
+/* --- 自定義組件樣式 (Components) --- */
+
+/* KPI 卡片 */
+.nordic-card {
+    background-color: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: var(--shadow-soft);
+    border: 1px solid rgba(0,0,0,0.02);
+    transition: transform 0.2s ease;
+    margin-bottom: 16px;
+    height: 100%;
+}
+
+.nordic-card:hover {
+    transform: translateY(-3px);
+    box-shadow: var(--shadow-hover);
+}
+
+.card-title {
+    font-size: 0.9rem;
+    color: #8C8C8C;
+    font-weight: 500;
+    margin-bottom: 8px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+
+.card-value {
+    font-size: 2rem;
+    font-weight: 700;
+    color: var(--secondary-color);
+    margin: 0;
+}
+
+/* 顏色變體 */
+.text-green { color: var(--primary-color) !important; }
+.text-red { color: var(--accent-color) !important; }
+.text-blue { color: #5B7C99 !important; }
+.text-orange { color: #D4A373 !important; }
+
+/* 邊框強調 */
+.border-left-green { border-left: 5px solid var(--primary-color); }
+.border-left-red { border-left: 5px solid var(--accent-color); }
+.border-left-blue { border-left: 5px solid #5B7C99; }
+.border-left-orange { border-left: 5px solid #D4A373; }
+
+/* 房間狀態卡片 */
+.room-card {
+    background-color: var(--card-bg);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    box-shadow: var(--shadow-soft);
+    transition: all 0.2s;
+    height: 110px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+}
+
+.room-card.status-active { background-color: #F0F7F4; color: #2D4F3C; border: 1px solid #Cce3d8; }
+.room-card.status-expiring { background-color: #FFF8F0; color: #8F5B29; border: 1px solid #Faebd7; }
+.room-card.status-expired { background-color: #FEF2F2; color: #9B2C2C; border: 1px solid #Fecaca; }
+.room-card.status-empty { background-color: #F3F4F6; color: #9CA3AF; border: 1px solid #E5E7EB; }
+
+.room-number { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
+.room-tenant { font-size: 0.95rem; font-weight: 500; }
+.room-detail { font-size: 0.75rem; opacity: 0.8; margin-top: 4px; }

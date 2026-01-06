@@ -1,0 +1,18 @@
+# 🔒 敏感資訊
+.streamlit/secrets.toml
+.env
+.env.local
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
