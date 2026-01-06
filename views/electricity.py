@@ -22,11 +22,10 @@ from config.constants import ROOMS
 
 # 動態匯入子模組
 try:
-    from .electricity.calculator import ElectricityCalculator, format_charge_summary, export_charge_details
-    from .electricity.storage import ElectricityStorage, create_electricity_tables
-except ImportError:
-    # 如果子模組不存在,使用簡化版
-    st.warning("⚠️ 電費子模組未安裝,部分功能可能受限")
+    from views.electricity.calculator import ElectricityCalculator, format_charge_summary, export_charge_details
+    from views.electricity.storage import ElectricityStorage, create_electricity_tables
+except ImportError as e:
+    st.warning(f"⚠️ 電費子模組載入失敗: {e}")
     ElectricityCalculator = None
     ElectricityStorage = None
 
