@@ -1,14 +1,6 @@
 """
-租屋管理系統 - 資料庫層 (生產級版本 v2.0)
-
-特性:
-- Connection Pool (提升 10x 效能)
-- Transaction 管理 (確保資料一致性)
-- Retry 機制 (網路不穩定自動重試)
-- 統一常數管理 (單一真相來源)
-- 完整錯誤處理與驗證
+租屋管理系統 - 資料庫層 (生產級版本 v2.0 - Supabase Boolean 相容版)
 """
-
 import streamlit as st
 import psycopg2
 from psycopg2 import pool, sql
@@ -38,7 +30,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
 # ============== 備用常數 (如果 import 失敗) ==============
 class BackupConstants:
     """備用常數 - 當 config.constants 無法導入時使用"""
@@ -49,7 +40,6 @@ class BackupConstants:
     EXPENSE_CATEGORIES = ["維修", "雜項", "貸款", "水電費", "網路費"]
     PAYMENT_STATUS = ["未繳", "已繳"]
     WATER_FEE = 100
-
 
 # ============== 常數驗證函數 ==============
 def validate_constants():
@@ -67,7 +57,6 @@ def validate_constants():
         # 驗證子集關係
         for room in ROOMS.EXCLUSIVE_ROOMS:
             assert room in ROOMS.ALL_ROOMS, f"獨享房間 {room} 不在總列表中"
-        
         for room in ROOMS.SHARING_ROOMS:
             assert room in ROOMS.ALL_ROOMS, f"分攤房間 {room} 不在總列表中"
         
@@ -80,7 +69,6 @@ def validate_constants():
         
         logger.info("✅ 常數驗證通過")
         return ROOMS, PAYMENT, EXPENSE, ELECTRICITY
-        
     except AssertionError as e:
         logger.error(f"❌ 常數驗證失敗: {e}")
         return BackupConstants()
@@ -88,11 +76,9 @@ def validate_constants():
         logger.error(f"❌ 常數驗證異常: {e}")
         return BackupConstants()
 
-
 # ============== 資料庫連線池 ==============
 class DatabaseConnectionPool:
     """Connection Pool 單例模式 - 管理資料庫連線池"""
-    
     _instance = None
     _pool = None
     
@@ -104,7 +90,6 @@ class DatabaseConnectionPool:
     def initialize(self, config: dict):
         """
         初始化連線池
-        
         Args:
             config: Supabase 連線配置 (host, port, database, user, password)
         """
@@ -127,7 +112,6 @@ class DatabaseConnectionPool:
                 connect_timeout=10
             )
             logger.info(f"✅ Connection Pool 已初始化 (min={minconn}, max={maxconn})")
-            
         except Exception as e:
             logger.error(f"❌ Connection Pool 初始化失敗: {e}")
             raise
@@ -150,7 +134,6 @@ class DatabaseConnectionPool:
             self._pool = None
             logger.info("✅ 所有連線已關閉")
 
-
 # ============== 主要資料庫類別 ==============
 class SupabaseDB:
     """資料庫操作層 - 生產級版本 v2.0"""
@@ -171,7 +154,6 @@ class SupabaseDB:
     def _get_connection(self):
         """
         Context Manager 管理連線生命週期
-        
         Yields:
             psycopg2 連線物件
         """
@@ -181,25 +163,21 @@ class SupabaseDB:
             yield conn
             conn.commit()
             logger.debug("✅ Transaction 已提交")
-            
         except psycopg2.IntegrityError as e:
             if conn:
                 conn.rollback()
             logger.error(f"❌ 資料一致性錯誤: {e}")
             raise
-            
         except psycopg2.OperationalError as e:
             if conn:
                 conn.rollback()
             logger.error(f"❌ 操作錯誤 (可能需重試): {e}")
             raise
-            
         except Exception as e:
             if conn:
                 conn.rollback()
             logger.error(f"❌ Transaction 失敗: {e}")
             raise
-            
         finally:
             if conn:
                 self.pool.return_connection(conn)
@@ -207,25 +185,20 @@ class SupabaseDB:
     def _retry_on_failure(self, func, max_retries: int = 3):
         """
         失敗重試機制
-        
         Args:
             func: 要執行的函數
             max_retries: 最大重試次數 (預設3)
-        
         Returns:
             函數執行結果
         """
         retry_delay = SYSTEM.RETRY_DELAY if CONSTANTS_LOADED else 1
-        
         for attempt in range(max_retries):
             try:
                 return func()
-                
             except psycopg2.OperationalError as e:
                 if attempt == max_retries - 1:
                     logger.error(f"❌ 重試 {max_retries} 次後失敗: {e}")
                     raise
-                
                 wait_time = retry_delay * (attempt + 1)
                 logger.warning(
                     f"⚠️ 重試 {attempt + 1}/{max_retries} "
@@ -236,7 +209,6 @@ class SupabaseDB:
     def health_check(self) -> bool:
         """
         檢查資料庫連線狀態
-        
         Returns:
             連線是否正常
         """
@@ -247,29 +219,24 @@ class SupabaseDB:
                 result = cur.fetchone()
                 logger.info("✅ 資料庫連線正常")
                 return result is not None
-                
         except Exception as e:
             logger.error(f"❌ 資料庫連線失敗: {e}")
             return False
     
     # ============== 房客管理 ==============
-    
     def get_tenants(self, active_only: bool = True) -> pd.DataFrame:
         """
         取得房客列表
-        
         Args:
             active_only: 只取得在住房客
-        
         Returns:
             房客資訊 DataFrame
         """
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
-                condition = "WHERE is_active = 1" if active_only else ""
-                
+                # ✅ 修正：改用 boolean true/false
+                condition = "WHERE is_active = true" if active_only else ""
                 cur.execute(f"""
                     SELECT id, room_number, tenant_name, phone, deposit,
                            base_rent, lease_start, lease_end, payment_method,
@@ -279,7 +246,6 @@ class SupabaseDB:
                     {condition}
                     ORDER BY room_number
                 """)
-                
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
                 
@@ -312,13 +278,11 @@ class SupabaseDB:
             
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
-                # 檢查房號是否已被佔用
+                # ✅ 修正：改用 boolean true
                 cur.execute(
-                    "SELECT COUNT(*) FROM tenants WHERE room_number = %s AND is_active = 1",
+                    "SELECT COUNT(*) FROM tenants WHERE room_number = %s AND is_active = true",
                     (room,)
                 )
-                
                 if cur.fetchone()[0] > 0:
                     return False, f"⚠️ 房號 {room} 已有房客入住"
                 
@@ -333,15 +297,14 @@ class SupabaseDB:
                 
                 logger.info(f"✅ 新增房客: {name} ({room})")
                 return True, f"✅ 成功新增房客: {name}"
-                
         except Exception as e:
             logger.error(f"❌ 新增房客失敗: {e}")
             return False, f"❌ 新增失敗: {str(e)[:100]}"
     
     def update_tenant(
-        self, tenant_id: int, room: str, name: str, phone: str, 
-        deposit: float, base_rent: float, start: date, end: date, 
-        payment_method: str, has_water_fee: bool = False, 
+        self, tenant_id: int, room: str, name: str, phone: str,
+        deposit: float, base_rent: float, start: date, end: date,
+        payment_method: str, has_water_fee: bool = False,
         annual_discount_months: int = 0, discount_notes: str = ''
     ) -> Tuple[bool, str]:
         """更新房客資訊 (含驗證)"""
@@ -357,7 +320,6 @@ class SupabaseDB:
             
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     UPDATE tenants
                     SET room_number = %s, tenant_name = %s, phone = %s,
@@ -371,7 +333,6 @@ class SupabaseDB:
                 
                 logger.info(f"✅ 更新房客: {name} (ID: {tenant_id})")
                 return True, f"✅ 成功更新房客: {name}"
-                
         except Exception as e:
             logger.error(f"❌ 更新房客失敗: {e}")
             return False, f"❌ 更新失敗: {str(e)[:100]}"
@@ -381,18 +342,15 @@ class SupabaseDB:
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
-                cur.execute("UPDATE tenants SET is_active = 0 WHERE id = %s", (tenant_id,))
-                
+                # ✅ 修正：改用 boolean false
+                cur.execute("UPDATE tenants SET is_active = false WHERE id = %s", (tenant_id,))
                 logger.info(f"✅ 刪除房客 ID: {tenant_id}")
                 return True, "✅ 已刪除房客"
-                
         except Exception as e:
             logger.error(f"❌ 刪除房客失敗: {e}")
             return False, f"❌ 刪除失敗: {str(e)[:100]}"
     
     # ============== 繳費管理 ==============
-    
     def get_payment_schedule(
         self, year: Optional[int] = None, month: Optional[int] = None,
         room: Optional[str] = None, status: Optional[str] = None
@@ -401,7 +359,6 @@ class SupabaseDB:
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 conditions = ["1=1"]
                 params = []
                 
@@ -426,11 +383,9 @@ class SupabaseDB:
                     WHERE {' AND '.join(conditions)}
                     ORDER BY payment_year DESC, payment_month DESC, room_number
                 """
-                
                 cur.execute(query_sql, params)
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
-                
                 return pd.DataFrame(data, columns=columns)
         
         return self._retry_on_failure(query)
@@ -444,13 +399,11 @@ class SupabaseDB:
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 # 檢查是否重複
                 cur.execute("""
                     SELECT COUNT(*) FROM payment_schedule
                     WHERE room_number = %s AND payment_year = %s AND payment_month = %s
                 """, (room, year, month))
-                
                 if cur.fetchone()[0] > 0:
                     return False, f"⚠️ {year}/{month} {room} 的應收單已存在"
                 
@@ -463,7 +416,6 @@ class SupabaseDB:
                 
                 logger.info(f"✅ 新增繳費排程: {room} {year}/{month}")
                 return True, "✅ 成功新增"
-                
         except Exception as e:
             logger.error(f"❌ 新增繳費排程失敗: {e}")
             return False, f"❌ 新增失敗: {str(e)[:100]}"
@@ -475,7 +427,6 @@ class SupabaseDB:
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 if paid_amount:
                     cur.execute("""
                         UPDATE payment_schedule
@@ -488,10 +439,8 @@ class SupabaseDB:
                         SET status = %s, paid_amount = amount, updated_at = NOW()
                         WHERE id = %s
                     """, ('已繳', payment_id))
-                
                 logger.info(f"✅ 標記繳費完成: ID {payment_id}")
                 return True
-                
         except Exception as e:
             logger.error(f"❌ 標記繳費失敗: {e}")
             return False
@@ -501,7 +450,6 @@ class SupabaseDB:
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     SELECT room_number, tenant_name, payment_year, payment_month,
                            amount, due_date
@@ -509,30 +457,24 @@ class SupabaseDB:
                     WHERE status = %s AND due_date < CURRENT_DATE
                     ORDER BY due_date
                 """, ('未繳',))
-                
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
-                
                 return pd.DataFrame(data, columns=columns)
         
         return self._retry_on_failure(query)
     
     # ============== 備忘錄管理 ==============
-    
     def add_memo(self, text: str, priority: str = 'normal') -> bool:
         """新增備忘錄"""
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute(
                     "INSERT INTO memos (memo_text, priority) VALUES (%s, %s)",
                     (text, priority)
                 )
-                
                 logger.info(f"✅ 新增備忘錄 (優先度: {priority})")
                 return True
-                
         except Exception as e:
             logger.error(f"❌ 新增備忘錄失敗: {e}")
             return False
@@ -542,23 +484,20 @@ class SupabaseDB:
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
-                condition = "" if include_completed else "WHERE is_completed = 0"
-                
+                # ✅ 修正：改用 boolean false
+                condition = "" if include_completed else "WHERE is_completed = false"
                 cur.execute(f"""
                     SELECT id, memo_text, priority, is_completed, created_at
                     FROM memos
                     {condition}
                     ORDER BY is_completed, priority DESC, created_at DESC
                 """)
-                
                 columns = [desc[0] for desc in cur.description]
                 return [dict(zip(columns, row)) for row in cur.fetchall()]
         
         return self._retry_on_failure(query)
     
     # ============== 支出管理 ==============
-    
     def add_expense(
         self, expense_date: date, category: str,
         amount: float, description: str
@@ -572,15 +511,12 @@ class SupabaseDB:
             
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     INSERT INTO expenses (expense_date, category, amount, description)
                     VALUES (%s, %s, %s, %s)
                 """, (expense_date, category, amount, description))
-                
                 logger.info(f"✅ 新增支出: {category} NT${amount}")
                 return True, "✅ 成功新增"
-                
         except Exception as e:
             logger.error(f"❌ 新增支出失敗: {e}")
             return False, f"❌ 新增失敗: {str(e)[:100]}"
@@ -590,23 +526,19 @@ class SupabaseDB:
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     SELECT id, expense_date, category, amount, description, created_at
                     FROM expenses
                     ORDER BY expense_date DESC
                     LIMIT %s
                 """, (limit,))
-                
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
-                
                 return pd.DataFrame(data, columns=columns)
         
         return self._retry_on_failure(query)
     
     # ============== 電費管理 ==============
-    
     def create_electricity_period(
         self, year: int, month_start: int, month_end: int
     ) -> Tuple[bool, int]:
@@ -614,18 +546,15 @@ class SupabaseDB:
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     INSERT INTO electricity_periods
                     (period_year, period_month_start, period_month_end)
                     VALUES (%s, %s, %s)
                     RETURNING id
                 """, (year, month_start, month_end))
-                
                 period_id = cur.fetchone()[0]
                 logger.info(f"✅ 建立電費期間: {year}/{month_start}-{month_end}")
                 return True, period_id
-                
         except Exception as e:
             logger.error(f"❌ 建立電費期間失敗: {e}")
             return False, -1
@@ -635,16 +564,13 @@ class SupabaseDB:
         def query():
             with self._get_connection() as conn:
                 cur = conn.cursor()
-                
                 cur.execute("""
                     SELECT id, period_year, period_month_start, period_month_end, created_at
                     FROM electricity_periods
                     ORDER BY created_at DESC
                 """)
-                
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
-                
                 return pd.DataFrame(data, columns=columns)
         
         return self._retry_on_failure(query)
@@ -654,11 +580,9 @@ class SupabaseDB:
     ) -> float:
         """
         計算電費 (使用統一常數)
-        
         Args:
             kwh: 用電度數
             is_summer: 是否為夏月
-        
         Returns:
             電費金額
         """
@@ -669,30 +593,23 @@ class SupabaseDB:
                 logger.warning("⚠️ 使用備用電費計算")
                 # 備用計算
                 return round(kwh * 4.5, 2)  # 簡易計算
-                
         except Exception as e:
             logger.error(f"❌ 電費計算失敗: {e}")
             return 0.0
 
-
 # ============== 初始化單例 ==============
-
 @st.cache_resource
 def get_db() -> SupabaseDB:
     """
     取得資料庫實例 (Singleton)
-    
     使用 Streamlit cache 確保整個 session 只有一個實例
-    
     Returns:
         SupabaseDB 實例
     """
     logger.info("✅ 初始化 SupabaseDB 單例")
     return SupabaseDB()
 
-
 # ============== 測試與驗證 ==============
-
 if __name__ == "__main__":
     # 簡易測試
     print("🧪 開始測試 services/db.py...")
