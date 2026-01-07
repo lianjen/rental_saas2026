@@ -9,16 +9,16 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 先暫時停用 CSS，確認是不是 CSS 造成的問題
-# def load_css(filename):
-#     try:
-#         with open(filename) as f:
-#             st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
-#     except FileNotFoundError:
-#         pass
-# 
-# css_path = os.path.join('assets', 'style.css')
-# load_css(css_path)
+# Load CSS
+def load_css(filename):
+    try:
+        with open(filename) as f:
+            st.markdown(f'<style>{f.read()}</style>', unsafe_allow_html=True)
+    except FileNotFoundError:
+        pass
+
+css_path = os.path.join('assets', 'style.css')
+load_css(css_path)
 
 # Database
 from services.db import SupabaseDB
