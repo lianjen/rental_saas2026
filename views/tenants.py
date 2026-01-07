@@ -342,16 +342,18 @@ def render_edit_tab(db):
             deposit = st.number_input(
                 "押金 *",
                 min_value=0,
-                value=float(tenant_data['deposit']),
-                step=1000,
-                key="edit_deposit"
+                max_value=1000000,
+                value=int(current_deposit or 0),
+                step=100,
+                key="edit_deposit",
             )
+
         
         with col2:
             base_rent = st.number_input(
                 "月租 *",
                 min_value=0,
-                value=float(tenant_data['base_rent']),
+                value=int(tenant_data['base_rent']),
                 step=500,
                 key="edit_rent"
             )
