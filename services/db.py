@@ -1,5 +1,5 @@
 """
-租屋管理系統 - 資料庫層 (生產級版本 v2.0 - Supabase Boolean 相容版)
+租屋管理系統 - 資料庫層 (生產級版本 v2.1 - 完整電費功能)
 """
 import streamlit as st
 import psycopg2
@@ -136,7 +136,7 @@ class DatabaseConnectionPool:
 
 # ============== 主要資料庫類別 ==============
 class SupabaseDB:
-    """資料庫操作層 - 生產級版本 v2.0"""
+    """資料庫操作層 - 生產級版本 v2.1"""
     
     def __init__(self):
         """初始化資料庫連線"""
@@ -224,6 +224,7 @@ class SupabaseDB:
             return False
     
     # ============== 房客管理 ==============
+    
     def get_tenants(self, active_only: bool = True) -> pd.DataFrame:
         """
         取得房客列表
@@ -278,6 +279,7 @@ class SupabaseDB:
             
             with self._get_connection() as conn:
                 cur = conn.cursor()
+                
                 # ✅ 修正：改用 boolean true
                 cur.execute(
                     "SELECT COUNT(*) FROM tenants WHERE room_number = %s AND is_active = true",
@@ -351,6 +353,7 @@ class SupabaseDB:
             return False, f"❌ 刪除失敗: {str(e)[:100]}"
     
     # ============== 繳費管理 ==============
+    
     def get_payment_schedule(
         self, year: Optional[int] = None, month: Optional[int] = None,
         room: Optional[str] = None, status: Optional[str] = None
@@ -383,6 +386,7 @@ class SupabaseDB:
                     WHERE {' AND '.join(conditions)}
                     ORDER BY payment_year DESC, payment_month DESC, room_number
                 """
+                
                 cur.execute(query_sql, params)
                 columns = [desc[0] for desc in cur.description]
                 data = cur.fetchall()
@@ -399,11 +403,13 @@ class SupabaseDB:
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
+                
                 # 檢查是否重複
                 cur.execute("""
                     SELECT COUNT(*) FROM payment_schedule
                     WHERE room_number = %s AND payment_year = %s AND payment_month = %s
                 """, (room, year, month))
+                
                 if cur.fetchone()[0] > 0:
                     return False, f"⚠️ {year}/{month} {room} 的應收單已存在"
                 
@@ -439,6 +445,7 @@ class SupabaseDB:
                         SET status = %s, paid_amount = amount, updated_at = NOW()
                         WHERE id = %s
                     """, ('已繳', payment_id))
+                
                 logger.info(f"✅ 標記繳費完成: ID {payment_id}")
                 return True
         except Exception as e:
@@ -464,6 +471,7 @@ class SupabaseDB:
         return self._retry_on_failure(query)
     
     # ============== 備忘錄管理 ==============
+    
     def add_memo(self, text: str, priority: str = 'normal') -> bool:
         """新增備忘錄"""
         try:
@@ -498,6 +506,7 @@ class SupabaseDB:
         return self._retry_on_failure(query)
     
     # ============== 支出管理 ==============
+    
     def add_expense(
         self, expense_date: date, category: str,
         amount: float, description: str
@@ -515,6 +524,7 @@ class SupabaseDB:
                     INSERT INTO expenses (expense_date, category, amount, description)
                     VALUES (%s, %s, %s, %s)
                 """, (expense_date, category, amount, description))
+                
                 logger.info(f"✅ 新增支出: {category} NT${amount}")
                 return True, "✅ 成功新增"
         except Exception as e:
@@ -538,42 +548,169 @@ class SupabaseDB:
         
         return self._retry_on_failure(query)
     
-    # ============== 電費管理 ==============
-    def create_electricity_period(
-        self, year: int, month_start: int, month_end: int
-    ) -> Tuple[bool, int]:
-        """建立電費計費期間"""
+    # ============== 電費管理 (完整版) ==============
+    
+    def add_electricity_period(self, year: int, month_start: int, month_end: int):
+        """新增計費期間（electricity.py 使用此方法名）"""
         try:
             with self._get_connection() as conn:
                 cur = conn.cursor()
                 cur.execute("""
-                    INSERT INTO electricity_periods
-                    (period_year, period_month_start, period_month_end)
+                    INSERT INTO electricity_periods (period_year, period_month_start, period_month_end)
                     VALUES (%s, %s, %s)
                     RETURNING id
                 """, (year, month_start, month_end))
                 period_id = cur.fetchone()[0]
-                logger.info(f"✅ 建立電費期間: {year}/{month_start}-{month_end}")
-                return True, period_id
+                logger.info(f"✅ 新增計費期間: {year}年 {month_start}-{month_end}月")
+                return True, f"計費期間已建立: {year}年 {month_start}-{month_end}月", period_id
         except Exception as e:
-            logger.error(f"❌ 建立電費期間失敗: {e}")
-            return False, -1
+            logger.error(f"❌ 新增計費期間失敗: {e}")
+            return False, str(e), None
     
-    def get_electricity_periods(self) -> pd.DataFrame:
-        """取得所有電費期間"""
-        def query():
-            with self._get_connection() as conn:
-                cur = conn.cursor()
-                cur.execute("""
-                    SELECT id, period_year, period_month_start, period_month_end, created_at
-                    FROM electricity_periods
-                    ORDER BY created_at DESC
-                """)
-                columns = [desc[0] for desc in cur.description]
-                data = cur.fetchall()
-                return pd.DataFrame(data, columns=columns)
-        
-        return self._retry_on_failure(query)
+    def get_all_periods(self):
+        """取得所有計費期間（electricity.py 使用此方法名）"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, period_year, period_month_start, period_month_end, created_at
+                FROM electricity_periods
+                ORDER BY period_year DESC, period_month_start DESC
+            """)
+            rows = cursor.fetchall()
+            return [
+                {
+                    'id': row[0],
+                    'period_year': row[1],
+                    'period_month_start': row[2],
+                    'period_month_end': row[3],
+                    'created_at': row[4]
+                }
+                for row in rows
+            ]
+    
+    def delete_electricity_period(self, period_id: int):
+        """刪除計費期間"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM electricity_periods WHERE id = %s", (period_id,))
+            logger.info(f"✅ 刪除計費期間 ID: {period_id}")
+            return True, "計費期間已刪除"
+    
+    def save_electricity_record(self, period_id: int, calc_results: list):
+        """儲存電費計算記錄"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                for result in calc_results:
+                    cursor.execute("""
+                        INSERT INTO electricity_records 
+                        (period_id, room_number, room_type, usage_kwh, public_share_kwh, 
+                         total_kwh, amount_due, payment_status)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, '未繳')
+                        ON CONFLICT (period_id, room_number) 
+                        DO UPDATE SET 
+                            room_type = EXCLUDED.room_type,
+                            usage_kwh = EXCLUDED.usage_kwh,
+                            public_share_kwh = EXCLUDED.public_share_kwh,
+                            total_kwh = EXCLUDED.total_kwh,
+                            amount_due = EXCLUDED.amount_due
+                    """, (
+                        period_id,
+                        result['房號'],
+                        result['類型'],
+                        result['使用度數'],
+                        result['公用分攤'],
+                        result['總度數'],
+                        result['應繳金額']
+                    ))
+                logger.info(f"✅ 儲存電費記錄: {len(calc_results)} 筆")
+                return True, "電費記錄已儲存"
+            except Exception as e:
+                logger.error(f"❌ 儲存電費記錄失敗: {e}")
+                return False, str(e)
+    
+    def get_electricity_payment_record(self, period_id: int):
+        """取得繳費記錄"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT room_number, amount_due, paid_amount, payment_status, 
+                       payment_date, notes, updated_at
+                FROM electricity_records
+                WHERE period_id = %s
+                ORDER BY room_number
+            """, (period_id,))
+            rows = cursor.fetchall()
+            
+            if not rows:
+                return pd.DataFrame()
+            
+            return pd.DataFrame([
+                {
+                    '房號': row[0],
+                    '應繳金額': row[1],
+                    '已繳金額': row[2] or 0,
+                    '繳費狀態': row[3],
+                    '繳款日期': row[4].strftime('%Y-%m-%d') if row[4] else '-',
+                    '備註': row[5] or '-',
+                    '更新時間': row[6].strftime('%Y-%m-%d %H:%M') if row[6] else '-'
+                }
+                for row in rows
+            ])
+    
+    def update_electricity_payment(self, period_id: int, room_number: str, 
+                                   payment_status: str, paid_amount: int = 0,
+                                   payment_date: str = None, notes: str = ""):
+        """更新繳費狀態"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            try:
+                cursor.execute("""
+                    UPDATE electricity_records
+                    SET payment_status = %s,
+                        paid_amount = %s,
+                        payment_date = %s,
+                        notes = %s,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE period_id = %s AND room_number = %s
+                """, (payment_status, paid_amount, payment_date, notes, period_id, room_number))
+                logger.info(f"✅ 更新繳費狀態: {room_number} -> {payment_status}")
+                return True, "繳費狀態已更新"
+            except Exception as e:
+                logger.error(f"❌ 更新繳費狀態失敗: {e}")
+                return False, str(e)
+    
+    def get_electricity_payment_summary(self, period_id: int):
+        """取得繳費統計"""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    SUM(amount_due) as total_due,
+                    SUM(paid_amount) as total_paid,
+                    COUNT(*) FILTER (WHERE payment_status = '已繳') as paid_rooms,
+                    COUNT(*) FILTER (WHERE payment_status = '未繳') as unpaid_rooms,
+                    COUNT(*) as total_rooms
+                FROM electricity_records
+                WHERE period_id = %s
+            """, (period_id,))
+            row = cursor.fetchone()
+            
+            total_due = row[0] or 0
+            total_paid = row[1] or 0
+            paid_rooms = row[2] or 0
+            unpaid_rooms = row[3] or 0
+            total_rooms = row[4] or 0
+            
+            return {
+                'total_due': total_due,
+                'total_paid': total_paid,
+                'total_balance': total_due - total_paid,
+                'paid_rooms': paid_rooms,
+                'unpaid_rooms': unpaid_rooms,
+                'total_rooms': total_rooms,
+                'collection_rate': (total_paid / total_due * 100) if total_due > 0 else 0
+            }
     
     def calculate_electricity_cost(
         self, kwh: float, is_summer: bool = False
@@ -598,6 +735,7 @@ class SupabaseDB:
             return 0.0
 
 # ============== 初始化單例 ==============
+
 @st.cache_resource
 def get_db() -> SupabaseDB:
     """
@@ -610,6 +748,7 @@ def get_db() -> SupabaseDB:
     return SupabaseDB()
 
 # ============== 測試與驗證 ==============
+
 if __name__ == "__main__":
     # 簡易測試
     print("🧪 開始測試 services/db.py...")
@@ -629,15 +768,5 @@ if __name__ == "__main__":
         print("✅ 連線池實例化成功")
     except Exception as e:
         print(f"❌ 連線池初始化失敗: {e}")
-    
-    # 測試資料庫實例
-    print("\n3️⃣ 測試資料庫實例化:")
-    try:
-        # 注意: 需要正確的 Streamlit secrets
-        # db = get_db()
-        # print("✅ 資料庫實例化成功")
-        print("⏭️ 跳過 (需要完整的環境設定)")
-    except Exception as e:
-        print(f"❌ 資料庫實例化失敗: {e}")
     
     print("\n✅ 測試完成!")
