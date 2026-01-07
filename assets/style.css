@@ -1,128 +1,444 @@
-/* assets/style.css */
+/* ============================================
+   幸福之家 Pro - Nordic Edition v14.2
+   Rental Management System - Optimized CSS
+   ============================================ */
 
-/* Google Fonts Import: 引入 Noto Sans TC 以確保繁體中文美感 */
-@import url('https://fonts.googleapis.com/css2?family=Lato:wght@400;700&family=Noto+Sans+TC:wght@300;400;500;700&display=swap');
+/* ============================================
+   1. 主要應用程式樣式
+   ============================================ */
 
-:root {
-    --bg-color: #F9F9F7;
-    --primary-color: #5F8D78;       /* Sage Green */
-    --secondary-color: #4A4A4A;     /* Soft Charcoal */
-    --accent-color: #E07A5F;        /* Terracotta */
-    --card-bg: #FFFFFF;
-    --shadow-soft: 0 4px 20px rgba(0,0,0,0.05);
-    --shadow-hover: 0 8px 25px rgba(0,0,0,0.08);
-    --radius: 16px;
-}
-
-/* 全域設定 */
+/* 主背景 */
 .stApp {
-    background-color: var(--bg-color);
-    font-family: 'Lato', 'Noto Sans TC', sans-serif;
-    color: var(--secondary-color);
+    background-color: #f7f9f9;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
 }
 
-/* 隱藏 Streamlit 預設元素 */
-#MainMenu {visibility: hidden;}
-header {visibility: hidden;}
-footer {visibility: hidden;}
-
-/* 側邊欄優化 */
-[data-testid="stSidebar"] {
-    background-color: #FFFFFF;
-    border-right: 1px solid #EAEaea;
-    box-shadow: var(--shadow-soft);
+/* 主要內容區域 */
+.main .block-container {
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+    max-width: 1400px;
 }
 
-[data-testid="stSidebar"] h1 {
-    color: var(--primary-color) !important;
-    font-weight: 700 !important;
+/* ============================================
+   2. 標題與文字樣式
+   ============================================ */
+
+h1, h2, h3, h4, h5, h6 {
+    color: #5F6F81;
+    font-family: 'Helvetica Neue', -apple-system, sans-serif;
+    font-weight: 600;
 }
 
-/* 按鈕樣式重塑 */
-.stButton > button {
-    background-color: var(--primary-color);
+h1 {
+    font-size: 2.5rem;
+    margin-bottom: 1.5rem;
+    color: #2F3542;
+}
+
+h2 {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+    color: #3d4451;
+}
+
+h3 {
+    font-size: 1.5rem;
+    margin-bottom: 0.75rem;
+}
+
+/* ============================================
+   3. 側邊欄樣式 (✅ 修正收起/展開功能)
+   ============================================ */
+
+/* 側邊欄主容器 */
+section[data-testid="stSidebar"] {
+    background: linear-gradient(180deg, #ffffff 0%, #f7f9f9 100%);
+    border-right: 1px solid #e1e4e8;
+    pointer-events: auto !important; /* ✅ 確保可以互動 */
+}
+
+section[data-testid="stSidebar"] > div {
+    background: transparent;
+    padding-top: 2rem;
+    padding-bottom: 2rem;
+}
+
+/* ✅ 關鍵修復：確保側邊欄收起/展開按鈕可以正常點擊 */
+[data-testid="stSidebarCollapseButton"],
+[data-testid="collapsedControl"] {
+    pointer-events: auto !important;
+    z-index: 999999 !important;
+    display: block !important;
+    opacity: 1 !important;
+    visibility: visible !important;
+    cursor: pointer !important;
+}
+
+/* 側邊欄標題 */
+section[data-testid="stSidebar"] h1 {
+    color: #2F3542;
+    font-size: 1.75rem;
+    margin-bottom: 0.5rem;
+}
+
+/* 側邊欄 Radio 按鈕群組 */
+section[data-testid="stSidebar"] div[role="radiogroup"] {
+    gap: 0.25rem;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] > label {
+    padding: 0.75rem 1rem;
+    border-radius: 8px;
+    transition: all 0.2s ease;
+    cursor: pointer;
+    background-color: transparent;
+    border: 1px solid transparent;
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] > label:hover {
+    background-color: rgba(164, 176, 190, 0.1);
+    border-color: rgba(164, 176, 190, 0.2);
+}
+
+section[data-testid="stSidebar"] div[role="radiogroup"] > label[data-checked="true"] {
+    background-color: #A4B0BE;
     color: white;
-    border-radius: var(--radius);
+    border-color: #747d8c;
+}
+
+/* ============================================
+   4. 按鈕樣式
+   ============================================ */
+
+.stButton > button {
+    background-color: #A4B0BE;
+    color: white;
+    border-radius: 8px;
     border: none;
-    padding: 0.5rem 1rem;
-    transition: all 0.3s ease;
+    padding: 0.5rem 1.5rem;
     font-weight: 500;
+    transition: all 0.3s ease;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 }
 
 .stButton > button:hover {
-    background-color: #4C7362; /* Darker Sage */
+    background-color: #747d8c;
     transform: translateY(-2px);
-    box-shadow: var(--shadow-hover);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.stButton > button:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+/* Primary 按鈕 */
+.stButton > button[kind="primary"] {
+    background-color: #70a1ff;
     color: white;
 }
 
-/* --- 自定義組件樣式 (Components) --- */
-
-/* KPI 卡片 */
-.nordic-card {
-    background-color: var(--card-bg);
-    border-radius: var(--radius);
-    padding: 24px;
-    box-shadow: var(--shadow-soft);
-    border: 1px solid rgba(0,0,0,0.02);
-    transition: transform 0.2s ease;
-    margin-bottom: 16px;
-    height: 100%;
+.stButton > button[kind="primary"]:hover {
+    background-color: #5890ff;
 }
 
-.nordic-card:hover {
-    transform: translateY(-3px);
-    box-shadow: var(--shadow-hover);
+/* Secondary 按鈕 */
+.stButton > button[kind="secondary"] {
+    background-color: #f1f2f6;
+    color: #2F3542;
+    border: 1px solid #dfe4ea;
 }
 
-.card-title {
-    font-size: 0.9rem;
-    color: #8C8C8C;
-    font-weight: 500;
-    margin-bottom: 8px;
-    text-transform: uppercase;
-    letter-spacing: 1px;
+.stButton > button[kind="secondary"]:hover {
+    background-color: #dfe4ea;
 }
 
-.card-value {
+/* ============================================
+   5. Metric 卡片樣式
+   ============================================ */
+
+div[data-testid="stMetricValue"] {
+    color: #2F3542;
     font-size: 2rem;
     font-weight: 700;
-    color: var(--secondary-color);
-    margin: 0;
 }
 
-/* 顏色變體 */
-.text-green { color: var(--primary-color) !important; }
-.text-red { color: var(--accent-color) !important; }
-.text-blue { color: #5B7C99 !important; }
-.text-orange { color: #D4A373 !important; }
-
-/* 邊框強調 */
-.border-left-green { border-left: 5px solid var(--primary-color); }
-.border-left-red { border-left: 5px solid var(--accent-color); }
-.border-left-blue { border-left: 5px solid #5B7C99; }
-.border-left-orange { border-left: 5px solid #D4A373; }
-
-/* 房間狀態卡片 */
-.room-card {
-    background-color: var(--card-bg);
-    border-radius: 12px;
-    padding: 16px;
-    text-align: center;
-    box-shadow: var(--shadow-soft);
-    transition: all 0.2s;
-    height: 110px;
-    display: flex;
-    flex-direction: column;
-    justify-content: center;
-    align-items: center;
+div[data-testid="stMetricLabel"] {
+    color: #5F6F81;
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
-.room-card.status-active { background-color: #F0F7F4; color: #2D4F3C; border: 1px solid #Cce3d8; }
-.room-card.status-expiring { background-color: #FFF8F0; color: #8F5B29; border: 1px solid #Faebd7; }
-.room-card.status-expired { background-color: #FEF2F2; color: #9B2C2C; border: 1px solid #Fecaca; }
-.room-card.status-empty { background-color: #F3F4F6; color: #9CA3AF; border: 1px solid #E5E7EB; }
+div[data-testid="stMetricDelta"] {
+    font-size: 0.875rem;
+    font-weight: 500;
+}
 
-.room-number { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
-.room-tenant { font-size: 0.95rem; font-weight: 500; }
-.room-detail { font-size: 0.75rem; opacity: 0.8; margin-top: 4px; }
+/* ============================================
+   6. 表格與 DataFrame 樣式
+   ============================================ */
+
+.dataframe {
+    border-radius: 8px;
+    overflow: hidden;
+    border: 1px solid #e1e4e8;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+}
+
+.dataframe thead tr th {
+    background-color: #5F6F81 !important;
+    color: white !important;
+    font-weight: 600;
+    text-transform: uppercase;
+    font-size: 0.875rem;
+    letter-spacing: 0.5px;
+    padding: 0.75rem 1rem;
+}
+
+.dataframe tbody tr:nth-child(even) {
+    background-color: #f7f9f9;
+}
+
+.dataframe tbody tr:hover {
+    background-color: #eef1f4;
+    transition: background-color 0.2s ease;
+}
+
+.dataframe tbody tr td {
+    padding: 0.75rem 1rem;
+    color: #2F3542;
+}
+
+/* ============================================
+   7. 表單元素樣式
+   ============================================ */
+
+/* Input 欄位 */
+.stTextInput > div > div > input,
+.stNumberInput > div > div > input,
+.stDateInput > div > div > input,
+.stSelectbox > div > div > select {
+    border-radius: 6px;
+    border: 1px solid #dfe4ea;
+    padding: 0.5rem 0.75rem;
+    transition: all 0.2s ease;
+}
+
+.stTextInput > div > div > input:focus,
+.stNumberInput > div > div > input:focus,
+.stDateInput > div > div > input:focus,
+.stSelectbox > div > div > select:focus {
+    border-color: #70a1ff;
+    box-shadow: 0 0 0 3px rgba(112, 161, 255, 0.1);
+}
+
+/* Checkbox */
+.stCheckbox > label {
+    cursor: pointer;
+    user-select: none;
+}
+
+/* ============================================
+   8. 卡片與容器樣式
+   ============================================ */
+
+/* 通用卡片 */
+.report-card,
+div[data-testid="stContainer"] {
+    padding: 1.5rem;
+    border-radius: 10px;
+    background-color: white;
+    box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+    margin-bottom: 1.5rem;
+    border-left: 5px solid #70a1ff;
+    transition: all 0.3s ease;
+}
+
+.report-card:hover,
+div[data-testid="stContainer"]:hover {
+    box-shadow: 0 6px 12px rgba(0,0,0,0.08);
+    transform: translateY(-2px);
+}
+
+/* Expander */
+.streamlit-expanderHeader {
+    background-color: #f7f9f9;
+    border-radius: 8px;
+    padding: 0.75rem 1rem;
+    font-weight: 600;
+    color: #2F3542;
+}
+
+.streamlit-expanderHeader:hover {
+    background-color: #eef1f4;
+}
+
+/* ============================================
+   9. Tab 標籤樣式
+   ============================================ */
+
+.stTabs [data-baseweb="tab-list"] {
+    gap: 0.5rem;
+    background-color: transparent;
+    border-bottom: 2px solid #e1e4e8;
+}
+
+.stTabs [data-baseweb="tab"] {
+    border-radius: 8px 8px 0 0;
+    padding: 0.75rem 1.5rem;
+    font-weight: 500;
+    color: #5F6F81;
+    background-color: transparent;
+    border: none;
+}
+
+.stTabs [data-baseweb="tab"]:hover {
+    background-color: rgba(164, 176, 190, 0.1);
+    color: #2F3542;
+}
+
+.stTabs [aria-selected="true"] {
+    background-color: #70a1ff;
+    color: white !important;
+}
+
+/* ============================================
+   10. Alert 與通知樣式
+   ============================================ */
+
+.stAlert {
+    border-radius: 8px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+}
+
+/* Success */
+div[data-baseweb="notification"][kind="success"] {
+    background-color: #d4edda;
+    border-left: 4px solid #28a745;
+}
+
+/* Info */
+div[data-baseweb="notification"][kind="info"] {
+    background-color: #d1ecf1;
+    border-left: 4px solid #17a2b8;
+}
+
+/* Warning */
+div[data-baseweb="notification"][kind="warning"] {
+    background-color: #fff3cd;
+    border-left: 4px solid #ffc107;
+}
+
+/* Error */
+div[data-baseweb="notification"][kind="error"] {
+    background-color: #f8d7da;
+    border-left: 4px solid #dc3545;
+}
+
+/* ============================================
+   11. 進度條樣式
+   ============================================ */
+
+.stProgress > div > div > div > div {
+    background-color: #70a1ff;
+    border-radius: 10px;
+}
+
+/* ============================================
+   12. 分隔線樣式
+   ============================================ */
+
+hr {
+    margin: 2rem 0;
+    border: none;
+    border-top: 2px solid #e1e4e8;
+}
+
+/* ============================================
+   13. 響應式設計
+   ============================================ */
+
+@media (max-width: 768px) {
+    .main .block-container {
+        padding: 1rem;
+    }
+    
+    h1 {
+        font-size: 1.75rem;
+    }
+    
+    h2 {
+        font-size: 1.5rem;
+    }
+    
+    div[data-testid="stMetricValue"] {
+        font-size: 1.5rem;
+    }
+}
+
+/* ============================================
+   14. 隱藏 Streamlit 預設元素
+   ============================================ */
+
+/* 隱藏 "Made with Streamlit" */
+#MainMenu {
+    visibility: hidden;
+}
+
+footer {
+    visibility: hidden;
+}
+
+/* 隱藏頂部的 Deploy 按鈕 */
+header[data-testid="stHeader"] {
+    background-color: transparent;
+}
+
+/* ============================================
+   15. 滾動條樣式 (可選)
+   ============================================ */
+
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: #f7f9f9;
+}
+
+::-webkit-scrollbar-thumb {
+    background: #A4B0BE;
+    border-radius: 5px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #747d8c;
+}
+
+/* ============================================
+   16. 動畫效果
+   ============================================ */
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.main .block-container > div {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+/* ============================================
+   END OF STYLESHEET
+   ============================================ */
