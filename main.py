@@ -1,5 +1,4 @@
 import os
-
 from dotenv import load_dotenv
 import streamlit as st
 
@@ -61,7 +60,6 @@ load_css(css_path)
 
 from services.db import SupabaseDB  # noqa: E402
 
-
 @st.cache_resource
 def get_db() -> SupabaseDB:
     """初始化並快取資料庫連線"""
@@ -103,35 +101,27 @@ def main() -> None:
     try:
         if menu == "📊 儀表板":
             from views import dashboard  # noqa: E402
-
             dashboard.render(db)
         elif menu == "💰 租金管理":
             from views import rent  # noqa: E402
-
             rent.render(db)
         elif menu == "📝 追蹤功能":
             from views import tracking  # noqa: E402
-
             tracking.render(db)
         elif menu == "👥 房客管理":
             from views import tenants  # noqa: E402
-
             tenants.render(db)
         elif menu == "⚡ 電費管理":
             from views import electricity  # noqa: E402
-
             electricity.render(db)
         elif menu == "💸 支出記錄":
             from views import expenses  # noqa: E402
-
             expenses.render(db)
         elif menu == "📬 通知管理":
             from views import notifications  # noqa: E402
-
             notifications.render(db)
         elif menu == "⚙️ 系統設定":
             from views import settings  # noqa: E402
-
             settings.render(db)
     except Exception as e:
         st.error(f"載入頁面時發生錯誤: {e}")
