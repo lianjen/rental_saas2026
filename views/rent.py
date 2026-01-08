@@ -332,7 +332,7 @@ def render_payment_tab(service: PaymentService, db: SupabaseDB):
                                             fail_count += 1
                                             logger.error(f"Mark payment {payment_id} failed: {e}")
                                     
-                                    if success
+                                    if success:
 _count > 0:
                                         st.success(f"✅ 成功標記 {success_count} 筆為已繳！")
                                     if fail_count > 0:
