@@ -2,8 +2,8 @@ from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from services.logger import logger
-from repositories.payment_repository import PaymentRepository
-from repositories.tenant_repository import TenantRepository
+from repository.payment_repository import PaymentRepository
+from repository.tenant_repository import TenantRepository
 
 
 @dataclass
@@ -595,3 +595,4 @@ class PaymentService:
         except Exception as e:
             logger.error(f"驗證排程失敗：{str(e)}")
             raise
+
