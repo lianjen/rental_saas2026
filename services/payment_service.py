@@ -1,598 +1,335 @@
-from typing import List, Dict, Optional
+# services/payment_service.py
+"""
+租金管理服務層
+職責：租金計算、排程管理、收款追蹤
+"""
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass
-from services.logger import logger
 from repository.payment_repository import PaymentRepository
 from repository.tenant_repository import TenantRepository
-
+from services.logger import logger
 
 @dataclass
-class PaymentInfo:
-    """Value Object - 租金資訊"""
-    room_number: str
-    tenant_name: str
-    payment_year: int
-    payment_month: int
-    amount: float
-    due_date: datetime
-    status: str
+class RentCalculation:
+    """租金計算結果值物件"""
+    base_rent: float
+    water_fee: float
+    discount: float
+    final_amount: float
+    calculation_notes: str
+
+@dataclass
+class PaymentSummary:
+    """收款摘要值物件"""
+    period: str  # "2026/01"
+    total_expected: float
+    total_received: float
+    unpaid_count: int
+    overdue_count: int
+    collection_rate: float
     
-    def is_overdue(self) -> bool:
-        """檢查是否逾期"""
-        return self.status == 'overdue' or (
-            self.status == 'unpaid' and datetime.now().date() > self.due_date.date()
-        )
-    
-    def days_until_due(self) -> int:
-        """計算距離到期日的天數"""
-        delta = self.due_date.date() - datetime.now().date()
-        return delta.days
+    def to_dict(self) -> Dict:
+        return {
+            'period': self.period,
+            'total_expected': self.total_expected,
+            'total_received': self.total_received,
+            'unpaid_count': self.unpaid_count,
+            'overdue_count': self.overdue_count,
+            'collection_rate': self.collection_rate
+        }
 
 
 class PaymentService:
-    """租金管理 Service"""
+    """租金管理服務（業務邏輯層）"""
     
     def __init__(self):
         self.payment_repo = PaymentRepository()
         self.tenant_repo = TenantRepository()
+        self.WATER_FEE = 50  # 水費固定金額
     
-    def create_monthly_schedule(self, year: int, month: int) -> Dict[str, int]:
+    def calculate_monthly_rent(self, tenant: Dict, target_month: int) -> RentCalculation:
         """
-        建立指定月份的全部租金排程
+        計算指定月份的應繳租金（核心演算法）
         
-        Returns:
-            {
-                'created': 5,      # 新建筆數
-                'skipped': 2,      # 已存在筆數
-                'errors': 0        # 失敗筆數
-            }
-        """
-        logger.info(f"開始建立 {year} 年 {month} 月的租金排程")
-        
-        try:
-            # 取得所有活躍房客
-            active_tenants = self.tenant_repo.get_active_tenants()
-            results = {'created': 0, 'skipped': 0, 'errors': 0}
-            
-            for tenant in active_tenants:
-                try:
-                    # 1. 檢查是否已存在
-                    if self.payment_repo.schedule_exists(
-                        tenant['room_number'], year, month
-                    ):
-                        results['skipped'] += 1
-                        logger.debug(f"房間 {tenant['room_number']} {year}/{month} 已存在")
-                        continue
-                    
-                    # 2. 計算租金
-                    amount = self.calculate_rent_amount(tenant, year, month)
-                    logger.debug(f"房間 {tenant['room_number']} 計算月租：${amount:,.0f}")
-                    
-                    # 3. 設定到期日期
-                    due_date = datetime(year, month, 5)
-                    logger.debug(f"到期日期：{due_date.date()}")
-                    
-                    # 4. 建立排程
-                    self.payment_repo.create_schedule(
-                        room_number=tenant['room_number'],
-                        tenant_name=tenant['tenant_name'],
-                        payment_year=year,
-                        payment_month=month,
-                        amount=amount,
-                        due_date=due_date,
-                        payment_method=tenant.get('payment_method', '月繳')
-                    )
-                    results['created'] += 1
-                    logger.debug(f"房間 {tenant['room_number']} {year}/{month} 建立成功")
-                
-                except Exception as e:
-                    results['errors'] += 1
-                    logger.error(f"房間 {tenant['room_number']} 建立失敗：{str(e)}")
-            
-            logger.info(f"建立完成 - 新增：{results['created']}，跳過：{results['skipped']}，失敗：{results['errors']}")
-            return results
-        
-        except Exception as e:
-            logger.error(f"建立月份排程失敗：{str(e)}")
-            raise
-    
-    def calculate_rent_amount(self, tenant: Dict, year: int, month: int) -> float:
-        """
-        計算月租金
-        
-        邏輯：
-        1. 基本月租 = base_rent - (100 如果有水費) = 4100 或 4000
-        2. 如果有年繳折扣，計算年度折扣月份
-            - 年費 = base_rent × (12 - 折扣月份)
-            - 例：5000 × 11 = 55000，月租 = 55000 / 12 = 4583.33
-        3. 加上水費 50 元
+        計算邏輯：
+        1. 基礎月租 = base_rent
+        2. 年繳折扣：若當月在 annual_discount_months 內，該月免租
+        3. 水費：has_water_fee = True 且無免除則加 50 元
         
         Args:
-            tenant: 房客資料
+            tenant: 房客資料字典
+            target_month: 目標月份 (1-12)
+        
+        Returns:
+            RentCalculation 物件
+        """
+        base_rent = float(tenant['base_rent'])
+        water_fee = 0
+        discount = 0
+        notes = []
+        
+        # === 年繳折扣邏輯 ===
+        annual_discount_months = tenant.get('annual_discount_months', 0)
+        if isinstance(annual_discount_months, int) and annual_discount_months > 0:
+            # 假設折扣月份為 1 月（可依實際業務調整）
+            discount_month_list = list(range(1, annual_discount_months + 1))
+            
+            if target_month in discount_month_list:
+                discount = base_rent
+                base_rent = 0
+                notes.append(f"年繳折扣（第 {target_month} 月免租）")
+        
+        # === 水費邏輯 ===
+        if tenant.get('has_water_fee', False):
+            water_fee = self.WATER_FEE
+            notes.append("含水費 $50")
+        
+        final_amount = base_rent + water_fee
+        calculation_notes = "; ".join(notes) if notes else "標準租金"
+        
+        logger.debug(
+            f"租金計算: {tenant['room_number']} - "
+            f"基礎 ${base_rent}, 水費 ${water_fee}, "
+            f"折扣 -${discount}, 總計 ${final_amount}"
+        )
+        
+        return RentCalculation(
+            base_rent=base_rent,
+            water_fee=water_fee,
+            discount=discount,
+            final_amount=final_amount,
+            calculation_notes=calculation_notes
+        )
+    
+    def create_monthly_schedule_batch(self, year: int, month: int) -> Dict[str, int]:
+        """
+        批量建立月租金排程（一鍵產生當月所有房客的租金記錄）
+        
+        Args:
             year: 年份
-            month: 月份
+            month: 月份 (1-12)
         
         Returns:
-            月租金額（已四捨五入）
+            {'created': 5, 'skipped': 2, 'errors': 0}
         """
-        try:
-            base_rent = float(tenant.get('base_rent', 0))
-            payment_method = tenant.get('payment_method', '月繳')
-            annual_discount_months = int(tenant.get('annual_discount_months', 0))
-            
-            # 計算基本月租
-            if payment_method and annual_discount_months > 0:
-                # 年繳折扣計算
-                months_to_pay = 12 - annual_discount_months  # 例：12 - 1 = 11
-                annual_total = base_rent * months_to_pay  # 例：5000 × 11 = 55000
-                monthly_amount = annual_total / 12  # 例：55000 / 12 = 4583.33
-                logger.debug(
-                    f"年繳計算 - 折扣月份：{annual_discount_months}，"
-                    f"年度總額：${annual_total:,.0f}，月租：${monthly_amount:,.0f}"
+        logger.info(f"=== 開始建立 {year}/{month:02d} 租金排程 ===")
+        
+        # 1. 取得所有活躍房客
+        active_tenants = self.tenant_repo.get_active_tenants()
+        logger.info(f"找到 {len(active_tenants)} 位活躍房客")
+        
+        results = {'created': 0, 'skipped': 0, 'errors': 0}
+        
+        for tenant in active_tenants:
+            try:
+                room_number = tenant['room_number']
+                
+                # 2. 檢查是否已有排程（避免重複建立）
+                if self.payment_repo.schedule_exists(room_number, year, month):
+                    logger.debug(f"跳過已存在的排程: {room_number}")
+                    results['skipped'] += 1
+                    continue
+                
+                # 3. 計算租金
+                rent_calc = self.calculate_monthly_rent(tenant, month)
+                
+                # 4. 建立排程
+                due_date = datetime(year, month, 5)  # 每月 5 號到期
+                
+                schedule_data = {
+                    'room_number': room_number,
+                    'tenant_name': tenant['tenant_name'],
+                    'payment_year': year,
+                    'payment_month': month,
+                    'amount': rent_calc.final_amount,
+                    'payment_method': tenant.get('payment_method', 'cash'),
+                    'due_date': due_date,
+                    'status': 'unpaid'
+                }
+                
+                schedule_id = self.payment_repo.create_schedule(schedule_data)
+                
+                results['created'] += 1
+                logger.info(
+                    f"✅ 建立排程: {room_number} - {tenant['tenant_name']} - "
+                    f"${rent_calc.final_amount} ({rent_calc.calculation_notes})"
                 )
-            else:
-                # 一般月繳
-                monthly_amount = base_rent
-                logger.debug(f"月繳租金：${monthly_amount:,.0f}")
-            
-            # 加上水費
-            water_fee = 0
-            if tenant.get('has_water_fee', False) and not tenant.get('water_fee_waived', False):
-                water_fee = 50
-                logger.debug(f"加入水費：${water_fee}")
-            
-            total = monthly_amount + water_fee
-            logger.debug(f"最終月租：${total:,.0f}")
-            
-            return round(total, 0)
+                
+            except Exception as e:
+                results['errors'] += 1
+                logger.error(f"❌ 建立排程失敗: {room_number} - {str(e)}", exc_info=True)
         
-        except Exception as e:
-            logger.error(f"計算租金失敗：{str(e)}")
-            raise
+        logger.info(f"=== 排程建立完成 ===")
+        logger.info(f"結果: {results}")
+        
+        return results
     
-    def calculate_rent_detail(self, tenant: Dict) -> Dict:
+    def mark_payment_as_paid(self, payment_id: int, paid_amount: float,
+                            paid_date: Optional[datetime] = None,
+                            notes: str = "") -> bool:
         """
-        計算租金詳細資訊
-        
-        Returns:
-            {
-                'base_rent': 5000,
-                'monthly_rent': 4583,
-                'has_water_discount': True,
-                'annual_discount_months': 1,
-                'annual_total': 55000,
-                'payment_method': '年繳'
-            }
-        """
-        try:
-            base_rent = float(tenant.get('base_rent', 0))
-            has_water_fee = tenant.get('has_water_fee', False)
-            payment_method = tenant.get('payment_method', '月繳')
-            annual_discount_months = int(tenant.get('annual_discount_months', 0))
-            
-            # 計算月租
-            monthly_rent = self.calculate_rent_amount(tenant, datetime.now().year, datetime.now().month)
-            
-            # 計算年度總額
-            annual_total = 0
-            if payment_method and annual_discount_months > 0:
-                months_to_pay = 12 - annual_discount_months
-                annual_total = base_rent * months_to_pay
-            else:
-                annual_total = base_rent * 12
-            
-            return {
-                'base_rent': base_rent,
-                'monthly_rent': monthly_rent,
-                'has_water_discount': has_water_fee,
-                'annual_discount_months': annual_discount_months,
-                'annual_total': annual_total,
-                'payment_method': payment_method
-            }
-        
-        except Exception as e:
-            logger.error(f"計算租金詳細資訊失敗：{str(e)}")
-            raise
-    
-    def get_overdue_payments(self) -> List[PaymentInfo]:
-        """
-        取得所有逾期租金
-        
-        Returns:
-            [PaymentInfo, ...]
-        """
-        try:
-            raw_data = self.payment_repo.get_by_status('overdue')
-            logger.info(f"取得逾期租金：{len(raw_data)} 筆")
-            
-            return [
-                PaymentInfo(
-                    room_number=p['room_number'],
-                    tenant_name=p['tenant_name'],
-                    payment_year=p['payment_year'],
-                    payment_month=p['payment_month'],
-                    amount=p['amount'],
-                    due_date=p['due_date'],
-                    status=p['status']
-                )
-                for p in raw_data
-            ]
-        
-        except Exception as e:
-            logger.error(f"取得逾期租金失敗：{str(e)}")
-            raise
-    
-    def mark_as_paid(
-        self,
-        payment_id: int,
-        paid_amount: float,
-        paid_date: Optional[datetime] = None,
-        notes: str = ""
-    ) -> bool:
-        """
-        標記為已繳
+        標記租金已繳納（單筆）
         
         Args:
-            payment_id: 租金記錄 ID
-            paid_amount: 繳款金額
+            payment_id: 排程 ID
+            paid_amount: 實繳金額
             paid_date: 繳款日期（預設今天）
             notes: 備註
         
         Returns:
             是否成功
         """
-        try:
-            if paid_date is None:
-                paid_date = datetime.now()
-            
-            logger.info(f"開始標記租金 ID {payment_id} 為已繳")
-            
-            # 1. 取得原始記錄
-            schedule = self.payment_repo.get_by_id(payment_id)
-            if not schedule:
-                logger.error(f"找不到租金記錄 ID {payment_id}")
-                return False
-            
-            # 2. 檢查繳款金額
-            expected = schedule['amount']
-            if abs(paid_amount - expected) > 0.01:
-                logger.warning(
-                    f"房間 {schedule['room_number']} 繳款金額不符 - "
-                    f"應繳：${expected:,.0f}，實繳：${paid_amount:,.0f}，"
-                    f"差額：${paid_amount - expected:,.0f}"
-                )
-            
-            # 3. 更新狀態
-            success = self.payment_repo.update_payment_status(
-                payment_id=payment_id,
-                status='paid',
-                paid_amount=paid_amount,
-                paid_date=paid_date,
-                notes=notes
-            )
-            
-            if success:
-                logger.info(
-                    f"房間 {schedule['room_number']} {schedule['payment_year']}/"
-                    f"{schedule['payment_month']} 標記為已繳 - "
-                    f"繳款金額：${paid_amount:,.0f}"
-                )
-                return True
-            else:
-                logger.error(f"標記租金 ID {payment_id} 失敗")
-                return False
+        if paid_date is None:
+            paid_date = datetime.now()
         
-        except Exception as e:
-            logger.error(f"標記為已繳失敗：{str(e)}")
-            raise
+        # 1. 取得原始排程資料
+        schedule = self.payment_repo.find_by_id(payment_id)
+        if not schedule:
+            logger.error(f"找不到排程 ID: {payment_id}")
+            return False
+        
+        # 2. 檢查金額差異
+        expected_amount = float(schedule['amount'])
+        difference = paid_amount - expected_amount
+        
+        if abs(difference) > 0.01:
+            logger.warning(
+                f"繳款金額異常: {schedule['room_number']} - "
+                f"期望 ${expected_amount}, 實收 ${paid_amount}, "
+                f"差額 ${difference}"
+            )
+            notes += f" [金額差異: ${difference:+.2f}]"
+        
+        # 3. 更新付款狀態
+        success = self.payment_repo.mark_as_paid(
+            payment_id=payment_id,
+            paid_amount=paid_amount,
+            paid_date=paid_date,
+            notes=notes
+        )
+        
+        if success:
+            logger.info(
+                f"✅ 標記繳款: {schedule['room_number']} - "
+                f"{schedule['payment_year']}/{schedule['payment_month']:02d} - "
+                f"${paid_amount}"
+            )
+        
+        return success
     
-    def get_payment_summary(self, year: int, month: int) -> Dict:
+    def batch_mark_paid(self, payment_ids: List[int], paid_amount: float) -> Dict[str, int]:
         """
-        取得指定月份的收款摘要
-        
-        Returns:
-            {
-                'total_expected': 60000,      # 應收總額
-                'total_received': 55000,      # 實收總額
-                'unpaid_count': 2,            # 待繳筆數
-                'overdue_count': 1,           # 逾期筆數
-                'collection_rate': 0.917      # 收款率
-            }
-        """
-        try:
-            logger.info(f"取得 {year}/{month} 的收款摘要")
-            
-            # 取得該月份的所有排程
-            schedules = self.payment_repo.get_by_period(year, month)
-            
-            total_expected = sum(s['amount'] for s in schedules)
-            total_received = sum(
-                s['paid_amount']
-                for s in schedules
-                if s['status'] == 'paid' and s['paid_amount']
-            )
-            unpaid = [s for s in schedules if s['status'] == 'unpaid']
-            overdue = [s for s in schedules if s['status'] == 'overdue']
-            
-            collection_rate = (
-                total_received / total_expected
-                if total_expected > 0
-                else 0
-            )
-            
-            result = {
-                'total_expected': total_expected,
-                'total_received': total_received,
-                'unpaid_count': len(unpaid),
-                'overdue_count': len(overdue),
-                'collection_rate': collection_rate
-            }
-            
-            logger.debug(
-                f"摘要統計 - 應收：${total_expected:,.0f}，"
-                f"實收：${total_received:,.0f}，"
-                f"待繳：{len(unpaid)} 筆，"
-                f"逾期：{len(overdue)} 筆，"
-                f"收款率：{collection_rate:.1%}"
-            )
-            
-            return result
-        
-        except Exception as e:
-            logger.error(f"取得收款摘要失敗：{str(e)}")
-            raise
-    
-    def get_payment_trends(self, year: int) -> List[Dict]:
-        """
-        取得全年收款趨勢
-        
-        Returns:
-            [
-                {
-                    'month': 1,
-                    'total_amount': 60000,
-                    'paid_amount': 55000,
-                    'payment_rate': 0.917
-                },
-                ...
-            ]
-        """
-        try:
-            logger.info(f"取得 {year} 年的收款趨勢")
-            trends = []
-            
-            for month in range(1, 13):
-                summary = self.get_payment_summary(year, month)
-                if summary['total_expected'] > 0:
-                    trends.append({
-                        'month': month,
-                        'total_amount': summary['total_expected'],
-                        'paid_amount': summary['total_received'],
-                        'payment_rate': summary['collection_rate']
-                    })
-            
-            logger.info(f"取得 {len(trends)} 個月份的趨勢數據")
-            return trends
-        
-        except Exception as e:
-            logger.error(f"取得收款趨勢失敗：{str(e)}")
-            raise
-    
-    def batch_mark_paid(self, payment_ids: List[int], paid_amount
-: float, paid_date: Optional[datetime] = None) -> Dict[str, int]:
-        """
-        批量標記為已繳
+        批量標記已繳款
         
         Args:
-            payment_ids: 租金記錄 ID 列表
-            paid_amount: 繳款金額
-            paid_date: 繳款日期
+            payment_ids: 排程 ID 列表
+            paid_amount: 統一繳款金額
         
         Returns:
-            {
-                'success': 5,     # 成功筆數
-                'failed': 0,      # 失敗筆數
-                'errors': []      # 錯誤訊息
-            }
+            {'success': 5, 'failed': 1}
         """
-        try:
-            if paid_date is None:
-                paid_date = datetime.now()
-            
-            logger.info(f"開始批量標記 {len(payment_ids)} 筆租金為已繳")
-            
-            results = {
-                'success': 0,
-                'failed': 0,
-                'errors': []
-            }
-            
-            for payment_id in payment_ids:
-                try:
-                    success = self.mark_as_paid(
-                        payment_id,
-                        paid_amount,
-                        paid_date
-                    )
-                    
-                    if success:
-                        results['success'] += 1
-                    else:
-                        results['failed'] += 1
-                        results['errors'].append(f"ID {payment_id} 標記失敗")
-                
-                except Exception as e:
-                    results['failed'] += 1
-                    error_msg = f"ID {payment_id} 異常：{str(e)}"
-                    results['errors'].append(error_msg)
-                    logger.error(error_msg)
-            
-            logger.info(
-                f"批量標記完成 - 成功：{results['success']}，"
-                f"失敗：{results['failed']}"
-            )
-            
-            return results
+        logger.info(f"批量標記繳款: {len(payment_ids)} 筆，金額 ${paid_amount}")
         
-        except Exception as e:
-            logger.error(f"批量標記失敗：{str(e)}")
-            raise
-    
-    def get_overdue_report(self) -> Dict:
-        """
-        取得逾期報告
+        results = {'success': 0, 'failed': 0}
         
-        Returns:
-            {
-                'total_overdue_count': 5,
-                'total_overdue_amount': 25000,
-                'overdue_payments': [PaymentInfo, ...]
-            }
-        """
-        try:
-            logger.info("生成逾期報告")
-            
-            overdue_payments = self.get_overdue_payments()
-            total_overdue_amount = sum(p.amount for p in overdue_payments)
-            
-            report = {
-                'total_overdue_count': len(overdue_payments),
-                'total_overdue_amount': total_overdue_amount,
-                'overdue_payments': overdue_payments
-            }
-            
-            logger.info(
-                f"逾期報告 - 筆數：{len(overdue_payments)}，"
-                f"金額：${total_overdue_amount:,.0f}"
-            )
-            
-            return report
-        
-        except Exception as e:
-            logger.error(f"生成逾期報告失敗：{str(e)}")
-            raise
-    
-    def get_tenant_payment_status(self, tenant_id: int) -> Dict:
-        """
-        取得房客的繳款狀態
-        
-        Returns:
-            {
-                'tenant_name': '王小明',
-                'room_number': '1A',
-                'total_amount': 50000,
-                'paid_amount': 40000,
-                'unpaid_amount': 10000,
-                'payment_rate': 0.8,
-                'status_summary': '待繳 2 筆，逾期 1 筆'
-            }
-        """
-        try:
-            logger.info(f"取得房客 ID {tenant_id} 的繳款狀態")
-            
-            schedules = self.payment_repo.get_by_tenant(tenant_id)
-            
-            if not schedules:
-                logger.warning(f"找不到房客 ID {tenant_id} 的租金記錄")
-                return {}
-            
-            tenant_info = schedules[0]
-            total_amount = sum(s['amount'] for s in schedules)
-            paid_amount = sum(
-                s['paid_amount']
-                for s in schedules
-                if s['status'] == 'paid' and s['paid_amount']
-            )
-            unpaid_amount = total_amount - paid_amount
-            payment_rate = paid_amount / total_amount if total_amount > 0 else 0
-            
-            unpaid_count = len([s for s in schedules if s['status'] == 'unpaid'])
-            overdue_count = len([s for s in schedules if s['status'] == 'overdue'])
-            
-            status_summary = f"待繳 {unpaid_count} 筆" if unpaid_count > 0 else ""
-            if overdue_count > 0:
-                status_summary += f"，逾期 {overdue_count} 筆" if status_summary else f"逾期 {overdue_count} 筆"
-            
-            result = {
-                'tenant_name': tenant_info['tenant_name'],
-                'room_number': tenant_info['room_number'],
-                'total_amount': total_amount,
-                'paid_amount': paid_amount,
-                'unpaid_amount': unpaid_amount,
-                'payment_rate': payment_rate,
-                'status_summary': status_summary or '全部已繳'
-            }
-            
-            logger.debug(
-                f"房客 {tenant_info['tenant_name']} - "
-                f"應繳：${total_amount:,.0f}，"
-                f"已繳：${paid_amount:,.0f}，"
-                f"繳款率：{payment_rate:.1%}"
-            )
-            
-            return result
-        
-        except Exception as e:
-            logger.error(f"取得房客繳款狀態失敗：{str(e)}")
-            raise
-    
-    def validate_schedule(self, year: int, month: int) -> Dict[str, any]:
-        """
-        驗證排程完整性
-        
-        Returns:
-            {
-                'is_valid': True,
-                'total_tenants': 10,
-                'scheduled_tenants': 10,
-                'missing_tenants': [],
-                'duplicate_schedules': []
-            }
-        """
-        try:
-            logger.info(f"驗證 {year}/{month} 的排程完整性")
-            
-            # 取得所有活躍房客
-            all_tenants = self.tenant_repo.get_active_tenants()
-            
-            # 取得已排程的租金
-            schedules = self.payment_repo.get_by_period(year, month)
-            scheduled_rooms = {s['room_number'] for s in schedules}
-            
-            # 找出缺失的房客
-            all_rooms = {t['room_number'] for t in all_tenants}
-            missing_tenants = all_rooms - scheduled_rooms
-            
-            # 檢查重複的排程
-            duplicate_schedules = []
-            room_counts = {}
-            for schedule in schedules:
-                room = schedule['room_number']
-                room_counts[room] = room_counts.get(room, 0) + 1
-                if room_counts[room] > 1:
-                    duplicate_schedules.append(room)
-            
-            is_valid = len(missing_tenants) == 0 and len(duplicate_schedules) == 0
-            
-            result = {
-                'is_valid': is_valid,
-                'total_tenants': len(all_tenants),
-                'scheduled_tenants': len(scheduled_rooms),
-                'missing_tenants': list(missing_tenants),
-                'duplicate_schedules': list(set(duplicate_schedules))
-            }
-            
-            if is_valid:
-                logger.info(f"排程驗證成功 - 所有 {len(all_tenants)} 位房客均已排程")
+        for payment_id in payment_ids:
+            if self.mark_payment_as_paid(payment_id, paid_amount):
+                results['success'] += 1
             else:
-                logger.warning(
-                    f"排程驗證失敗 - 缺失：{len(missing_tenants)} 位房客，"
-                    f"重複：{len(set(duplicate_schedules))} 間房間"
-                )
-            
-            return result
+                results['failed'] += 1
         
-        except Exception as e:
-            logger.error(f"驗證排程失敗：{str(e)}")
-            raise
-
+        logger.info(f"批量標記完成: {results}")
+        return results
+    
+    def get_overdue_payments(self) -> List[Dict]:
+        """取得所有逾期租金"""
+        return self.payment_repo.get_by_status('overdue')
+    
+    def get_unpaid_payments(self) -> List[Dict]:
+        """取得所有未繳租金"""
+        return self.payment_repo.get_by_status('unpaid')
+    
+    def update_overdue_status(self) -> int:
+        """
+        更新逾期狀態（定時任務用）
+        將過期未繳的租金標記為 overdue
+        
+        Returns:
+            更新的記錄數
+        """
+        count = self.payment_repo.update_overdue_status()
+        logger.info(f"更新逾期狀態: {count} 筆")
+        return count
+    
+    def get_payment_summary(self, year: int, month: int) -> PaymentSummary:
+        """
+        取得租金收款摘要
+        
+        Returns:
+            PaymentSummary 物件
+        """
+        raw_summary = self.payment_repo.get_payment_summary(year, month)
+        
+        collection_rate = 0
+        if raw_summary['total_expected'] > 0:
+            collection_rate = raw_summary['total_received'] / raw_summary['total_expected']
+        
+        return PaymentSummary(
+            period=f"{year}/{month:02d}",
+            total_expected=raw_summary['total_expected'],
+            total_received=raw_summary['total_received'],
+            unpaid_count=raw_summary['unpaid_count'],
+            overdue_count=raw_summary['overdue_count'],
+            collection_rate=collection_rate
+        )
+    
+    def get_tenant_payment_history(self, room_number: str, limit: int = 12) -> List[Dict]:
+        """
+        取得房客繳款歷史（最近 N 期）
+        
+        Args:
+            room_number: 房間號碼
+            limit: 記錄數量限制
+        
+        Returns:
+            排程記錄列表
+        """
+        query = f"""
+            SELECT * FROM payment_schedule
+            WHERE room_number = %s
+            ORDER BY payment_year DESC, payment_month DESC
+            LIMIT {limit}
+        """
+        return self.payment_repo._execute_query(query, (room_number,))
+    
+    def calculate_annual_rent_total(self, tenant: Dict) -> Tuple[float, str]:
+        """
+        計算年度應繳總額（含折扣）
+        
+        Returns:
+            (年度總額, 計算說明)
+        """
+        base_rent = float(tenant['base_rent'])
+        annual_discount_months = tenant.get('annual_discount_months', 0)
+        has_water_fee = tenant.get('has_water_fee', False)
+        
+        # 計算實際繳款月數
+        months_to_pay = 12 - annual_discount_months
+        
+        # 年度租金總額
+        annual_rent = base_rent * months_to_pay
+        
+        # 年度水費總額
+        annual_water_fee = self.WATER_FEE * 12 if has_water_fee else 0
+        
+        total = annual_rent + annual_water_fee
+        
+        explanation = (
+            f"基礎月租 ${base_rent} × {months_to_pay} 月 = ${annual_rent}"
+        )
+        if has_water_fee:
+            explanation += f" + 水費 ${self.WATER_FEE} × 12 月 = ${annual_water_fee}"
+        explanation += f" = 年度總計 ${total}"
+        
+        return total, explanation
