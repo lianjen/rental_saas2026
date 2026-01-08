@@ -354,3 +354,312 @@ def render_logs_tab(db):
         
         with cols1:
             st.metric
+# ============== Tab 3: 通知記錄（續） ==============
+
+def render_logs_tab(db):
+    """通知記錄查看"""
+    section_header("📜 通知記錄", "", divider=False)
+    
+    # 篩選條件
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        filter_status = st.selectbox(
+            "狀態",
+            [None, "sent", "failed", "pending"],
+            format_func=lambda x: "全部" if x is None else "✅ 已發送" if x == "sent" else "❌ 失敗" if x == "failed" else "⏳ 待發送",
+            key="log_status"
+        )
+    
+    with col2:
+        filter_type = st.selectbox(
+            "接收者類型",
+            [None, "landlord", "tenant"],
+            format_func=lambda x: "全部" if x is None else "🏠 房東" if x == "landlord" else "👤 房客",
+            key="log_recipient"
+        )
+    
+    with col3:
+        days_back = st.number_input("查詢天數", min_value=1, max_value=90, value=7, key="log_days")
+    
+    with col4:
+        limit = st.number_input("顯示筆數", min_value=10, max_value=500, value=100, key="log_limit")
+    
+    st.divider()
+    
+    # 查詢記錄
+    try:
+        df = get_notification_logs(db, days_back, filter_type, filter_status, limit)
+        
+        if df.empty:
+            empty_state("查無記錄", "📭", "")
+            return
+        
+        # 統計卡片
+        cols1, cols2, cols3, cols4 = st.columns(4)
+        
+        with cols1:
+            st.metric("📊 總記錄數", str(len(df)))
+        
+        with cols2:
+            success_count = len(df[df["status"] == "sent"])
+            st.metric("✅ 已發送", str(success_count))
+        
+        with cols3:
+            failed_count = len(df[df["status"] == "failed"])
+            st.metric("❌ 失敗", str(failed_count))
+        
+        with cols4:
+            if len(df) > 0:
+                success_rate = (success_count / len(df) * 100)
+                st.metric("📈 成功率", f"{success_rate:.1f}%")
+        
+        st.divider()
+        
+        # 顯示記錄表格
+        st.write(f"**共 {len(df)} 筆記錄**")
+        
+        display_df = df.copy()
+        display_df["created_at"] = pd.to_datetime(display_df["created_at"]).dt.strftime("%Y-%m-%d %H:%M")
+        display_df["status"] = display_df["status"].apply(
+            lambda x: "✅ 已發送" if x == "sent" else "❌ 失敗" if x == "failed" else "⏳ 待發送"
+        )
+        
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
+        
+        # 失敗記錄詳情
+        st.divider()
+        failed_df = df[df["status"] == "failed"]
+        
+        if not failed_df.empty:
+            st.write(f"**❌ 失敗記錄詳情（{len(failed_df)} 筆）**")
+            
+            for idx, row in failed_df.iterrows():
+                with st.expander(f"ID: {row['id']} - {row['notification_type']} ({row['created_at']})"):
+                    st.write(f"**接收者：** {row['recipient_type']} - {row['recipient_id']}")
+                    st.write(f"**標題：** {row.get('title', 'N/A')}")
+                    if row.get('error_message'):
+                        st.error(f"**錯誤訊息：** {row['error_message']}")
+                    st.write(f"**訊息內容：**")
+                    st.text(row['message'])
+    
+    except Exception as e:
+        st.error(f"查詢失敗: {e}")
+        logger.error(f"查詢通知記錄失敗: {e}", exc_info=True)
+
+
+# ============== 輔助函數 ==============
+
+def get_all_settings(db) -> dict:
+    """取得所有系統設定"""
+    try:
+        with db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT setting_key, setting_value FROM notification_settings")
+            
+            settings = {}
+            for row in cur.fetchall():
+                settings[row[0]] = row[1]
+            
+            return settings
+    
+    except Exception as e:
+        logger.error(f"取得設定失敗: {e}", exc_info=True)
+        return {}
+
+
+def save_setting(db, key: str, value: str):
+    """儲存單一設定"""
+    try:
+        with db.get_connection() as conn:
+            cur = conn.cursor()
+            cur.execute("""
+                INSERT INTO notification_settings (setting_key, setting_value, updated_at)
+                VALUES (%s, %s, NOW())
+                ON CONFLICT (setting_key) 
+                DO UPDATE SET setting_value = EXCLUDED.setting_value, updated_at = NOW()
+            """, (key, value))
+            conn.commit()
+    
+    except Exception as e:
+        logger.error(f"儲存設定失敗: {e}", exc_info=True)
+        raise
+
+
+def send_test_line_message(access_token: str, user_id: str) -> tuple:
+    """發送測試 LINE 訊息"""
+    try:
+        test_message = f"""🧪 測試訊息
+
+這是一則測試通知，用於確認 LINE Bot 設定正確。
+
+發送時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+如果您看到這則訊息，代表設定成功！✅"""
+        
+        response = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {access_token}"
+            },
+            json={
+                "to": user_id,
+                "messages": [
+                    {
+                        "type": "text",
+                        "text": test_message
+                    }
+                ]
+            },
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return True, "✅ 測試訊息已發送！請檢查 LINE 是否收到。"
+        else:
+            return False, f"❌ 發送失敗 (HTTP {response.status_code}): {response.text}"
+    
+    except Exception as e:
+        return False, f"❌ 發送失敗: {str(e)}"
+
+
+def trigger_edge_function(db, trigger_type: str) -> bool:
+    """觸發 Edge Function（手動發送通知）"""
+    try:
+        # 這裡需要你的 Supabase Project URL 和 Anon Key
+        # 你可以從環境變數或資料庫設定中讀取
+        
+        # 暫時使用 st.info 提示
+        st.info("""
+        ⚠️ 手動觸發功能需要配置：
+        
+        1. 在 Supabase Dashboard → Edge Functions
+        2. 點擊 `daily-payment-check`
+        3. 點擊 "Invoke" 按鈕
+        
+        或使用以下 curl 命令：
+        ```bash
+        curl -X POST 'https://YOUR_PROJECT_ID.supabase.co/functions/v1/daily-payment-check' \\
+          -H 'Authorization: Bearer YOUR_ANON_KEY' \\
+          -H 'Content-Type: application/json' \\
+          -d '{"trigger": "manual"}'
+        ```
+        """)
+        
+        return False  # 暫時返回 False，等實作完整
+        
+        # TODO: 完整實作
+        # settings = get_all_settings(db)
+        # project_url = settings.get('supabase_url')
+        # anon_key = settings.get('supabase_anon_key')
+        
+        # if not project_url or not anon_key:
+        #     st.error("缺少 Supabase URL 或 Anon Key")
+        #     return False
+        
+        # response = requests.post(
+        #     f"{project_url}/functions/v1/daily-payment-check",
+        #     headers={
+        #         "Authorization": f"Bearer {anon_key}",
+        #         "Content-Type": "application/json"
+        #     },
+        #     json={"trigger": trigger_type},
+        #     timeout=30
+        # )
+        
+        # return response.status_code == 200
+    
+    except Exception as e:
+        logger.error(f"觸發 Edge Function 失敗: {e}", exc_info=True)
+        st.error(f"觸發失敗: {e}")
+        return False
+
+
+def get_recent_notifications(db, limit: int = 10) -> pd.DataFrame:
+    """取得最近的通知記錄"""
+    try:
+        with db.get_connection() as conn:
+            query = """
+                SELECT 
+                    id,
+                    recipient_type,
+                    notification_type,
+                    status,
+                    created_at
+                FROM notification_logs
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            return pd.read_sql(query, conn, params=(limit,))
+    
+    except Exception as e:
+        logger.error(f"查詢最近通知失敗: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
+def get_notification_logs(
+    db, 
+    days: int, 
+    recipient_type: str = None, 
+    status: str = None, 
+    limit: int = 100
+) -> pd.DataFrame:
+    """查詢通知記錄"""
+    try:
+        with db.get_connection() as conn:
+            conditions = ["created_at > NOW() - INTERVAL '%s days'"]
+            params = [days]
+            
+            if recipient_type:
+                conditions.append("recipient_type = %s")
+                params.append(recipient_type)
+            
+            if status:
+                conditions.append("status = %s")
+                params.append(status)
+            
+            where_clause = " AND ".join(conditions)
+            params.append(limit)
+            
+            query = f"""
+                SELECT 
+                    id,
+                    recipient_type,
+                    recipient_id,
+                    notification_type,
+                    title,
+                    message,
+                    status,
+                    error_message,
+                    sent_at,
+                    created_at
+                FROM notification_logs
+                WHERE {where_clause}
+                ORDER BY created_at DESC
+                LIMIT %s
+            """
+            
+            return pd.read_sql(query, conn, params=tuple(params))
+    
+    except Exception as e:
+        logger.error(f"查詢通知記錄失敗: {e}", exc_info=True)
+        return pd.DataFrame()
+
+
+# ============== 主函數 ==============
+
+def render(db):
+    """通知管理主頁面"""
+    st.title("📬 通知管理")
+    
+    tab1, tab2, tab3 = st.tabs(["⚙️ 系統設定", "🚀 手動觸發", "📜 通知記錄"])
+    
+    with tab1:
+        render_settings_tab(db)
+    
+    with tab2:
+        render_manual_tab(db)
+    
+    with tab3:
+        render_logs_tab(db)
