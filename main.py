@@ -11,8 +11,8 @@ load_dotenv()
 
 # 驗證必要環境變數
 REQUIRED_VARS = ["SUPABASE_URL", "SUPABASE_KEY"]
-missing_vars = [var for var in REQUIRED_VARS if not (os.getenv(var) or st.secrets.get(var))]if missing_vars:
-    st.error(f"❌ 缺少必要環境變數: {', '.join(missing_vars)}")
+missing_vars = [var for var in REQUIRED_VARS if not (os.getenv(var) or st.secrets.get(var))]
+if missing_vars:    st.error(f"❌ 缺少必要環境變數: {', '.join(missing_vars)}")
     st.info("請參考 .env.example 設定環境變數")
     st.stop()
 
