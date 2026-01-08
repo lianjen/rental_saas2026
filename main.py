@@ -85,4 +85,21 @@ def main():
         elif menu == "⚡ 電費管理":
             from views import electricity
             electricity.render(db)
-        
+        elif menu == "💸 支出記錄":
+            from views import expenses
+            expenses.render(db)
+        elif menu == "📬 通知管理":
+            from views import notifications
+            notifications.render(db)
+        elif menu == "⚙️ 系統設定":
+            from views import settings
+            settings.render(db)
+    except Exception as e:
+        st.error(f"載入頁面時發生錯誤: {e}")
+        st.exception(e)
+
+# ============================================
+# 5. Entry Point
+# ============================================
+if __name__ == "__main__":
+    main()
