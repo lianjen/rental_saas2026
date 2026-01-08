@@ -13,29 +13,43 @@ load_dotenv()
 
 
 def get_env(var: str, default: Optional[str] = None) -> Optional[str]:
-    """統一從 os.environ 和 st.secrets 讀環境變數。"""
-    # 先讀系統環境變數
+    """統一從 os.environ、st.secrets root 和 st.secrets['supabase'] 讀環境變數。"""
+    # 1. 系統環境變數
     value = os.getenv(var)
     if value:
         return value
 
-    # 再讀 Streamlit Secrets（Key 不存在時不丟錯）
+    # 2. Streamlit Secrets 根層
     try:
-        return st.secrets[var]  # type: ignore[index]
+        value = st.secrets[var]  # type: ignore[index]
+        if value:
+            return value
     except Exception:
-        return default
+        pass
 
-# 🔍 加在這裡
+    # 3. Streamlit Secrets 裡的 [supabase] 區塊
+    try:
+        supa_cfg = st.secrets["supabase"]  # type: ignore[index]
+        value = supa_cfg.get(var)  # type: ignore[union-attr]
+        if value:
+            return value
+    except Exception:
+        pass
+
+    return default
+
+
+# 🔍 Debug：確認目前可見的 secrets key（修好後可以註解掉）
 st.write("DEBUG secrets keys:", list(st.secrets.keys()))
 
 # 驗證必要環境變數
 REQUIRED_VARS = ["SUPABASE_URL", "SUPABASE_KEY"]
 
-# 🔍 debug：看看現在到底讀到什麼
+missing_vars = [var for var in REQUIRED_VARS if not get_env(var)]
+
+# 🔍 Debug：顯示目前抓到的值（修好後可以註解掉）
 st.write("DEBUG SUPABASE_URL:", get_env("SUPABASE_URL"))
 st.write("DEBUG SUPABASE_KEY:", "存在" if get_env("SUPABASE_KEY") else "不存在")
-
-missing_vars = [var for var in REQUIRED_VARS if not get_env(var)]
 
 if missing_vars:
     st.error(f"❌ 缺少必要環境變數: {', '.join(missing_vars)}")
