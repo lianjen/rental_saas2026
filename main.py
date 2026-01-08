@@ -25,6 +25,8 @@ def get_env(var: str, default: Optional[str] = None) -> Optional[str]:
     except Exception:
         return default
 
+# 🔍 加在這裡
+st.write("DEBUG secrets keys:", list(st.secrets.keys()))
 
 # 驗證必要環境變數
 REQUIRED_VARS = ["SUPABASE_URL", "SUPABASE_KEY"]
