@@ -20,3 +20,4 @@ python-dotenv==1.0.1  # 環境變數管理 (開發用)
 # sentry-sdk==2.23.0  # 錯誤監控 (生產環境建議啟用)
 # Excel 匯出功能 (可選)
 openpyxl==3.1.2
+python-dotenv==1.0.0
