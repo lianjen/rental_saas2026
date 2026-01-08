@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import date, datetime, timedelta
 from dateutil.relativedelta import relativedelta
 from services.payment_service import PaymentService
-from services.database import SupabaseDB
+from services.db import SupabaseDB
 import logging
 import time
 
@@ -626,3 +626,4 @@ def render_tenant_comparison(service: PaymentService, db: SupabaseDB, year: int,
 if __name__ == "__main__":
     st.set_page_config(page_title="💰 租金管理", layout="wide")
     render_rent_page()
+
