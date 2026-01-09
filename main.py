@@ -39,17 +39,10 @@ def get_env(var: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-# 🔍 Debug：確認目前可見的 secrets key（部署成功後可以註解掉這兩行）
-st.write("DEBUG secrets keys:", list(st.secrets.keys()))
-
 # 驗證必要環境變數
 REQUIRED_VARS = ["SUPABASE_URL", "SUPABASE_KEY"]
 
 missing_vars = [var for var in REQUIRED_VARS if not get_env(var)]
-
-# 🔍 Debug：顯示目前抓到的值（部署成功後可以註解掉這三行）
-st.write("DEBUG SUPABASE_URL:", get_env("SUPABASE_URL"))
-st.write("DEBUG SUPABASE_KEY:", "存在" if get_env("SUPABASE_KEY") else "不存在")
 
 if missing_vars:
     st.error(f"❌ 缺少必要環境變數: {', '.join(missing_vars)}")
