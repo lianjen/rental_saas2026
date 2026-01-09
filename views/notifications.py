@@ -163,7 +163,8 @@ def render_manual_tab(db):
     
     try:
         with db.get_connection() as conn:
-            df = pd.read_sql("""
+            cur = conn.cursor()
+            cur.execute("""
                 SELECT 
                     room_number,
                     tenant_name,
@@ -175,7 +176,11 @@ def render_manual_tab(db):
                     days_until_due
                 FROM vw_payments_need_notification
                 ORDER BY due_date
-            """, conn)
+            """)
+            
+            columns = [desc[0] for desc in cur.description]
+            data = cur.fetchall()
+            df = pd.DataFrame(data, columns=columns)
         
         if df.empty:
             st.info("🎉 目前沒有需要通知的項目")
@@ -399,6 +404,7 @@ def get_recent_notifications(db, limit: int = 10) -> pd.DataFrame:
     """取得最近的通知記錄"""
     try:
         with db.get_connection() as conn:
+            cur = conn.cursor()
             query = """
                 SELECT 
                     id,
@@ -410,7 +416,12 @@ def get_recent_notifications(db, limit: int = 10) -> pd.DataFrame:
                 ORDER BY created_at DESC
                 LIMIT %s
             """
-            return pd.read_sql(query, conn, params=(limit,))
+            cur.execute(query, (limit,))
+            
+            columns = [desc[0] for desc in cur.description]
+            data = cur.fetchall()
+            
+            return pd.DataFrame(data, columns=columns)
     except Exception as e:
         logger.error(f"查詢最近通知失敗: {e}")
         return pd.DataFrame()
@@ -420,6 +431,8 @@ def get_notification_logs(db, days: int, recipient_type: str = None, status: str
     """查詢通知記錄"""
     try:
         with db.get_connection() as conn:
+            cur = conn.cursor()
+            
             conditions = ["created_at > NOW() - INTERVAL '%s days'"]
             params = [days]
             
@@ -451,7 +464,12 @@ def get_notification_logs(db, days: int, recipient_type: str = None, status: str
                 LIMIT %s
             """
             
-            return pd.read_sql(query, conn, params=tuple(params))
+            cur.execute(query, tuple(params))
+            
+            columns = [desc[0] for desc in cur.description]
+            data = cur.fetchall()
+            
+            return pd.DataFrame(data, columns=columns)
     except Exception as e:
         logger.error(f"查詢通知記錄失敗: {e}")
         return pd.DataFrame()
