@@ -15,8 +15,15 @@ class PaymentRepository:
     def __init__(self):
         self.db = SupabaseDB()
     
-    def create_schedule(self, **kwargs) -> int:
-        """新增租金排程"""
+    def create_schedule(self, schedule_data: Dict) -> int:
+        """新增租金排程
+        
+        Args:
+            schedule_data: 排程資料字典
+            
+        Returns:
+            新增的排程 ID
+        """
         with self.db.get_connection() as conn:
             cur = conn.cursor()
             
@@ -24,15 +31,19 @@ class PaymentRepository:
                 INSERT INTO payment_schedule (
                     room_number, tenant_name, payment_year, payment_month,
                     amount, due_date, payment_method, status
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'unpaid')
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
             
             cur.execute(query, (
-                kwargs['room_number'], kwargs['tenant_name'],
-                kwargs['payment_year'], kwargs['payment_month'],
-                kwargs['amount'], kwargs['due_date'],
-                kwargs['payment_method']
+                schedule_data['room_number'],
+                schedule_data['tenant_name'],
+                schedule_data['payment_year'],
+                schedule_data['payment_month'],
+                schedule_data['amount'],
+                schedule_data['due_date'],
+                schedule_data['payment_method'],
+                schedule_data.get('status', 'unpaid')
             ))
             
             schedule_id = cur.fetchone()[0]
@@ -84,6 +95,10 @@ class PaymentRepository:
             
             return dict(result) if result else None
     
+    def find_by_id(self, payment_id: int) -> Optional[Dict]:
+        """依 ID 查詢單筆（別名方法，與 get_by_id 相同）"""
+        return self.get_by_id(payment_id)
+    
     def update_payment_status(self, payment_id: int, **kwargs) -> bool:
         """更新付款狀態"""
         with self.db.get_connection() as conn:
@@ -97,6 +112,36 @@ class PaymentRepository:
                 kwargs['status'], kwargs['paid_amount'],
                 kwargs['paid_date'], kwargs['notes'], payment_id
             ))
+            
+            success = cur.rowcount > 0
+            
+            return success
+    
+    def mark_as_paid(self, payment_id: int, paid_amount: float, 
+                     paid_date: datetime, notes: str = "") -> bool:
+        """標記為已繳款
+        
+        Args:
+            payment_id: 排程 ID
+            paid_amount: 繳款金額
+            paid_date: 繳款日期
+            notes: 備註
+            
+        Returns:
+            是否成功
+        """
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                UPDATE payment_schedule
+                SET status = 'paid', 
+                    paid_amount = %s, 
+                    paid_date = %s, 
+                    notes = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (paid_amount, paid_date, notes, payment_id))
             
             success = cur.rowcount > 0
             
@@ -213,7 +258,8 @@ class PaymentRepository:
                             UPDATE payment_schedule
                             SET status = 'paid', 
                                 paid_amount = %s, 
-                                paid_date = CURRENT_DATE
+                                paid_date = CURRENT_DATE,
+                                updated_at = NOW()
                             WHERE id = %s
                         """, (paid_amount, payment_id))
                     else:
@@ -221,7 +267,8 @@ class PaymentRepository:
                             UPDATE payment_schedule
                             SET status = 'paid', 
                                 paid_amount = amount, 
-                                paid_date = CURRENT_DATE
+                                paid_date = CURRENT_DATE,
+                                updated_at = NOW()
                             WHERE id = %s
                         """, (payment_id,))
                     
@@ -258,6 +305,70 @@ class PaymentRepository:
                 LIMIT %s
             """, (room_number, limit))
             
+            results = cur.fetchall()
+            
+            return [dict(r) for r in results]
+    
+    def update_overdue_status(self) -> int:
+        """更新逾期狀態（將過期未繳標記為 overdue）
+        
+        Returns:
+            更新的記錄數
+        """
+        with self.db.get_connection() as conn:
+            cur = conn.cursor()
+            
+            cur.execute("""
+                UPDATE payment_schedule
+                SET status = 'overdue', updated_at = NOW()
+                WHERE status = 'unpaid' 
+                  AND due_date < CURRENT_DATE
+            """)
+            
+            updated_count = cur.rowcount
+            
+            return updated_count
+    
+    def get_all_payments(self, year: Optional[int] = None, 
+                        month: Optional[int] = None,
+                        status: Optional[str] = None) -> List[Dict]:
+        """取得所有租金記錄（支援篩選）
+        
+        Args:
+            year: 年份篩選（可選）
+            month: 月份篩選（可選）
+            status: 狀態篩選（可選）
+            
+        Returns:
+            租金記錄列表
+        """
+        with self.db.get_connection() as conn:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            
+            conditions = []
+            params = []
+            
+            if year:
+                conditions.append("payment_year = %s")
+                params.append(year)
+            
+            if month:
+                conditions.append("payment_month = %s")
+                params.append(month)
+            
+            if status:
+                conditions.append("status = %s")
+                params.append(status)
+            
+            where_clause = " AND ".join(conditions) if conditions else "1=1"
+            
+            query = f"""
+                SELECT * FROM payment_schedule
+                WHERE {where_clause}
+                ORDER BY payment_year DESC, payment_month DESC, room_number
+            """
+            
+            cur.execute(query, tuple(params))
             results = cur.fetchall()
             
             return [dict(r) for r in results]
