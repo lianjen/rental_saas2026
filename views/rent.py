@@ -1,4 +1,4 @@
-# views/rent.py (重構版 - 約 200 行)
+# views/rent.py (完整修正版)
 """
 租金管理頁面
 職責：UI 展示與使用者互動，業務邏輯委派給 PaymentService
@@ -19,7 +19,7 @@ def render(db):
     """主入口函式（供 main.py 動態載入使用）
     
     Args:
-        db: SupabaseDB 實例（由 main.py 傳入，但 PaymentService 不使用）
+        db: SupabaseDB 實例（由 main.py 傳入）
     """
     render_rent_page()
 
@@ -180,10 +180,12 @@ def render_payment_management_tab(service: PaymentService):
             payments = service.get_unpaid_payments()
         elif status_filter == "逾期":
             payments = service.get_overdue_payments()
+        elif status_filter == "已繳":
+            # 新增：取得已繳記錄
+            payments = service.payment_repo.get_by_status('paid')
         else:
-            # 全部或已繳需要額外實作
-            st.info("此篩選尚未完整實作，請選擇「未繳」或「逾期」")
-            return
+            # 全部：取得所有記錄
+            payments = service.payment_repo.get_all_payments()
         
         if not payments:
             st.info("✅ 沒有符合條件的記錄")
@@ -203,34 +205,35 @@ def render_payment_management_tab(service: PaymentService):
             hide_index=True
         )
         
-        # 批量標記功能
-        st.divider()
-        st.subheader("批量標記已繳")
-        
-        col1, col2, col3 = st.columns([3, 2, 2])
-        
-        with col1:
-            selected_ids = st.multiselect(
-                "選擇要標記的記錄（可多選）",
-                options=df['id'].tolist(),
-                format_func=lambda x: f"{df[df['id']==x]['room_number'].values[0]} - "
-                                     f"{df[df['id']==x]['payment_year'].values[0]}/"
-                                     f"{df[df['id']==x]['payment_month'].values[0]:02d}"
-            )
-        
-        with col2:
-            paid_amount = st.number_input("繳款金額", min_value=0.0, step=100.0)
-        
-        with col3:
-            st.write("")
-            st.write("")
-            if st.button("✅ 標記為已繳", disabled=len(selected_ids) == 0):
-                with st.spinner("處理中..."):
-                    results = service.batch_mark_paid(selected_ids, paid_amount)
-                    st.success(
-                        f"✅ 完成！成功 {results['success']} 筆，失敗 {results['failed']} 筆"
-                    )
-                    st.rerun()
+        # 批量標記功能（只在「未繳」或「逾期」時顯示）
+        if status_filter in ["未繳", "逾期"]:
+            st.divider()
+            st.subheader("批量標記已繳")
+            
+            col1, col2, col3 = st.columns([3, 2, 2])
+            
+            with col1:
+                selected_ids = st.multiselect(
+                    "選擇要標記的記錄（可多選）",
+                    options=df['id'].tolist(),
+                    format_func=lambda x: f"{df[df['id']==x]['room_number'].values[0]} - "
+                                         f"{df[df['id']==x]['payment_year'].values[0]}/"
+                                         f"{df[df['id']==x]['payment_month'].values[0]:02d}"
+                )
+            
+            with col2:
+                paid_amount = st.number_input("繳款金額", min_value=0.0, step=100.0)
+            
+            with col3:
+                st.write("")
+                st.write("")
+                if st.button("✅ 標記為已繳", disabled=len(selected_ids) == 0):
+                    with st.spinner("處理中..."):
+                        results = service.batch_mark_paid(selected_ids, paid_amount)
+                        st.success(
+                            f"✅ 完成！成功 {results['success']} 筆，失敗 {results['failed']} 筆"
+                        )
+                        st.rerun()
     
     except Exception as e:
         st.error(f"❌ 載入資料失敗: {str(e)}")
@@ -257,7 +260,6 @@ def render_reports_tab(service: PaymentService):
 def render_monthly_trend_report(service: PaymentService):
     """月度趨勢報表"""
     st.info("🚧 月度趨勢報表開發中...")
-    # TODO: 實作最近 6 個月的收款趨勢圖表
 
 
 def render_tenant_history_report(service: PaymentService):
@@ -308,7 +310,6 @@ def render_tenant_history_report(service: PaymentService):
 def render_annual_report(service: PaymentService):
     """年度統計報表"""
     st.info("🚧 年度統計報表開發中...")
-    # TODO: 實作年度總收入、收款率等統計
 
 
 # ============================================
