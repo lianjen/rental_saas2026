@@ -1,4 +1,4 @@
-# views/rent.py (完整修正版)
+# views/rent.py (完整版 - 含本月摘要列表)
 """
 租金管理頁面
 職責：UI 展示與使用者互動，業務邏輯委派給 PaymentService
@@ -104,7 +104,7 @@ def render_batch_schedule_tab(service: PaymentService):
 
 
 def render_monthly_summary_tab(service: PaymentService):
-    """本月摘要頁籤"""
+    """本月摘要頁籤（含詳細列表和批量標記）"""
     st.subheader("📊 本月租金收款摘要")
     
     # 選擇期間
@@ -158,6 +158,129 @@ def render_monthly_summary_tab(service: PaymentService):
         st.progress(summary.collection_rate)
         st.caption(f"收款進度：{summary.collection_rate:.1%}")
         
+        st.divider()
+        
+        # === 詳細列表 ===
+        st.subheader("📋 本月繳費明細")
+        
+        # 取得本月所有記錄
+        payments = service.payment_repo.get_by_period(year, month)
+        
+        if not payments:
+            st.info("📭 本月尚無租金記錄")
+            return
+        
+        # 轉換為 DataFrame
+        df = pd.DataFrame(payments)
+        
+        # 格式化日期
+        if 'due_date' in df.columns:
+            df['due_date'] = pd.to_datetime(df['due_date']).dt.strftime('%Y-%m-%d')
+        if 'paid_date' in df.columns:
+            df['paid_date'] = pd.to_datetime(df['paid_date'], errors='coerce').dt.strftime('%Y-%m-%d')
+        
+        # 狀態標記（英文轉中文顯示）
+        status_map = {'unpaid': '⏳ 未繳', 'paid': '✅ 已繳', 'overdue': '🚨 逾期'}
+        df['status_display'] = df['status'].map(status_map).fillna(df['status'])
+        
+        # 顯示表格
+        st.dataframe(
+            df[[
+                'room_number', 'tenant_name', 'amount', 
+                'due_date', 'status_display', 'payment_method'
+            ]].rename(columns={
+                'room_number': '房號',
+                'tenant_name': '房客',
+                'amount': '應繳金額',
+                'due_date': '到期日',
+                'status_display': '狀態',
+                'payment_method': '繳款方式'
+            }),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # === 批量標記功能 ===
+        unpaid_df = df[df['status'] == 'unpaid']
+        
+        if not unpaid_df.empty:
+            st.divider()
+            st.subheader("✅ 批量標記已繳")
+            
+            col1, col2, col3 = st.columns([4, 2, 2])
+            
+            with col1:
+                # 初始化 session state
+                if 'selected_monthly' not in st.session_state:
+                    st.session_state.selected_monthly = []
+                
+                selected_ids = st.multiselect(
+                    "選擇要標記為已繳的項目（可多選）",
+                    options=unpaid_df['id'].tolist(),
+                    default=st.session_state.selected_monthly,
+                    format_func=lambda x: (
+                        f"{unpaid_df[unpaid_df['id']==x]['room_number'].values[0]} - "
+                        f"{unpaid_df[unpaid_df['id']==x]['tenant_name'].values[0]} "
+                        f"(${unpaid_df[unpaid_df['id']==x]['amount'].values[0]:,.0f})"
+                    ),
+                    key="monthly_multiselect"
+                )
+                
+                st.session_state.selected_monthly = selected_ids
+            
+            with col2:
+                paid_amount = st.number_input(
+                    "繳款金額",
+                    min_value=0.0,
+                    step=100.0,
+                    help="留空則使用應繳金額",
+                    key="monthly_paid_amount"
+                )
+            
+            with col3:
+                st.write("")
+                st.write("")
+                
+                # 快速選擇按鈕
+                col_btn1, col_btn2 = st.columns(2)
+                
+                with col_btn1:
+                    if st.button("📌 全選", use_container_width=True):
+                        st.session_state.selected_monthly = unpaid_df['id'].tolist()
+                        st.rerun()
+                
+                with col_btn2:
+                    if st.button("🔄 清除", use_container_width=True):
+                        st.session_state.selected_monthly = []
+                        st.rerun()
+            
+            # 標記按鈕
+            if st.button(
+                f"✅ 標記為已繳 ({len(selected_ids)} 筆)",
+                type="primary",
+                disabled=len(selected_ids) == 0,
+                use_container_width=True
+            ):
+                with st.spinner("處理中..."):
+                    try:
+                        # 使用 batch_mark_paid
+                        results = service.batch_mark_paid(
+                            selected_ids,
+                            paid_amount if paid_amount > 0 else None
+                        )
+                        
+                        if results['success'] > 0:
+                            st.success(f"✅ 成功標記 {results['success']} 筆")
+                            st.session_state.selected_monthly = []
+                            st.rerun()
+                        
+                        if results['failed'] > 0:
+                            st.error(f"❌ 失敗 {results['failed']} 筆")
+                    
+                    except Exception as e:
+                        st.error(f"❌ 標記失敗: {str(e)}")
+                        logger.error(f"批量標記失敗: {str(e)}", exc_info=True)
+        
     except Exception as e:
         st.error(f"❌ 載入摘要失敗: {str(e)}")
         logger.error(f"載入摘要錯誤: {str(e)}", exc_info=True)
@@ -181,10 +304,8 @@ def render_payment_management_tab(service: PaymentService):
         elif status_filter == "逾期":
             payments = service.get_overdue_payments()
         elif status_filter == "已繳":
-            # 新增：取得已繳記錄
             payments = service.payment_repo.get_by_status('paid')
         else:
-            # 全部：取得所有記錄
             payments = service.payment_repo.get_all_payments()
         
         if not payments:
@@ -195,12 +316,24 @@ def render_payment_management_tab(service: PaymentService):
         df = pd.DataFrame(payments)
         df['due_date'] = pd.to_datetime(df['due_date']).dt.strftime('%Y-%m-%d')
         
+        # 狀態顯示
+        status_map = {'unpaid': '⏳ 未繳', 'paid': '✅ 已繳', 'overdue': '🚨 逾期'}
+        df['status_display'] = df['status'].map(status_map).fillna(df['status'])
+        
         # 顯示表格
         st.dataframe(
             df[[
                 'room_number', 'tenant_name', 'payment_year',
-                'payment_month', 'amount', 'due_date', 'status'
-            ]],
+                'payment_month', 'amount', 'due_date', 'status_display'
+            ]].rename(columns={
+                'room_number': '房號',
+                'tenant_name': '房客',
+                'payment_year': '年份',
+                'payment_month': '月份',
+                'amount': '金額',
+                'due_date': '到期日',
+                'status_display': '狀態'
+            }),
             use_container_width=True,
             hide_index=True
         )
@@ -216,9 +349,11 @@ def render_payment_management_tab(service: PaymentService):
                 selected_ids = st.multiselect(
                     "選擇要標記的記錄（可多選）",
                     options=df['id'].tolist(),
-                    format_func=lambda x: f"{df[df['id']==x]['room_number'].values[0]} - "
-                                         f"{df[df['id']==x]['payment_year'].values[0]}/"
-                                         f"{df[df['id']==x]['payment_month'].values[0]:02d}"
+                    format_func=lambda x: (
+                        f"{df[df['id']==x]['room_number'].values[0]} - "
+                        f"{df[df['id']==x]['payment_year'].values[0]}/"
+                        f"{df[df['id']==x]['payment_month'].values[0]:02d}"
+                    )
                 )
             
             with col2:
@@ -229,7 +364,7 @@ def render_payment_management_tab(service: PaymentService):
                 st.write("")
                 if st.button("✅ 標記為已繳", disabled=len(selected_ids) == 0):
                     with st.spinner("處理中..."):
-                        results = service.batch_mark_paid(selected_ids, paid_amount)
+                        results = service.batch_mark_paid(selected_ids, paid_amount if paid_amount > 0 else None)
                         st.success(
                             f"✅ 完成！成功 {results['success']} 筆，失敗 {results['failed']} 筆"
                         )
