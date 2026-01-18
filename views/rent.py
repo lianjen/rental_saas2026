@@ -70,7 +70,7 @@ def render_batch_schedule_tab(service: PaymentService):
     with col3:
         st.write("")  # 對齊
         st.write("")
-        create_btn = st.button("🚀 一鍵建立排程", type="primary", use_container_width=True)
+        create_btn = st.button("🚀 一鍵建立排程", type="primary", width="stretch")
     
     if create_btn:
         with st.spinner(f"正在建立 {year}/{month:02d} 的租金排程..."):
