@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 from datetime import datetime
 from services.db import SupabaseDB
 from psycopg2.extras import RealDictCursor
-
+from services.logger import logger
 
 class PaymentRepository:
     """租金資料存取物件（Repository Pattern）"""
@@ -20,13 +20,12 @@ class PaymentRepository:
         
         Args:
             schedule_data: 排程資料字典
-            
+        
         Returns:
             新增的排程 ID
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            
             query = """
                 INSERT INTO payment_schedule (
                     room_number, tenant_name, payment_year, payment_month,
@@ -34,7 +33,6 @@ class PaymentRepository:
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
-            
             cur.execute(query, (
                 schedule_data['room_number'],
                 schedule_data['tenant_name'],
@@ -45,54 +43,43 @@ class PaymentRepository:
                 schedule_data['payment_method'],
                 schedule_data.get('status', 'unpaid')
             ))
-            
             schedule_id = cur.fetchone()[0]
-            
             return schedule_id
     
     def schedule_exists(self, room_number: str, year: int, month: int) -> bool:
         """檢查排程是否已存在"""
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            
             cur.execute("""
                 SELECT 1 FROM payment_schedule
                 WHERE room_number = %s
                   AND payment_year = %s
                   AND payment_month = %s
             """, (room_number, year, month))
-            
             exists = cur.fetchone() is not None
-            
             return exists
     
     def get_by_status(self, status: str) -> List[Dict]:
         """依狀態查詢"""
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("""
                 SELECT * FROM payment_schedule
                 WHERE status = %s
                 ORDER BY due_date
             """, (status,))
-            
             results = cur.fetchall()
-            
             return [dict(r) for r in results]
     
     def get_by_id(self, payment_id: int) -> Optional[Dict]:
         """依 ID 查詢單筆"""
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute(
                 "SELECT * FROM payment_schedule WHERE id = %s",
                 (payment_id,)
             )
-            
             result = cur.fetchone()
-            
             return dict(result) if result else None
     
     def find_by_id(self, payment_id: int) -> Optional[Dict]:
@@ -103,7 +90,6 @@ class PaymentRepository:
         """更新付款狀態"""
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            
             cur.execute("""
                 UPDATE payment_schedule
                 SET status = %s, paid_amount = %s, paid_date = %s, notes = %s
@@ -112,9 +98,7 @@ class PaymentRepository:
                 kwargs['status'], kwargs['paid_amount'],
                 kwargs['paid_date'], kwargs['notes'], payment_id
             ))
-            
             success = cur.rowcount > 0
-            
             return success
     
     def mark_as_paid(self, payment_id: int, paid_amount: float, 
@@ -126,41 +110,80 @@ class PaymentRepository:
             paid_amount: 繳款金額
             paid_date: 繳款日期
             notes: 備註
-            
+        
         Returns:
             是否成功
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            
             cur.execute("""
                 UPDATE payment_schedule
-                SET status = 'paid', 
-                    paid_amount = %s, 
-                    paid_date = %s, 
+                SET status = 'paid',
+                    paid_amount = %s,
+                    paid_date = %s,
                     notes = %s,
                     updated_at = NOW()
                 WHERE id = %s
             """, (paid_amount, paid_date, notes, payment_id))
-            
             success = cur.rowcount > 0
-            
             return success
     
     def get_by_period(self, year: int, month: int) -> List[Dict]:
-        """依期間查詢"""
+        """依期間查詢
+        
+        Args:
+            year: 年份
+            month: 月份
+        
+        Returns:
+            租金記錄列表
+        """
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("""
                 SELECT * FROM payment_schedule
                 WHERE payment_year = %s AND payment_month = %s
                 ORDER BY room_number
             """, (year, month))
-            
             results = cur.fetchall()
-            
             return [dict(r) for r in results]
+    
+    def get_by_room_and_period(self, room_number: str, year: int, month: int) -> List[Dict]:
+        """取得指定房間和期間的租金記錄（新增方法）
+        
+        Args:
+            room_number: 房號
+            year: 年份
+            month: 月份
+        
+        Returns:
+            租金記錄列表（自動判斷逾期狀態）
+        """
+        try:
+            with self.db.get_connection() as conn:
+                cur = conn.cursor(cursor_factory=RealDictCursor)
+                cur.execute("""
+                    SELECT 
+                        ps.*,
+                        CASE 
+                            WHEN ps.status = 'unpaid' AND ps.due_date < CURRENT_DATE 
+                            THEN 'overdue'
+                            ELSE ps.status
+                        END as status
+                    FROM payment_schedule ps
+                    WHERE ps.room_number = %s
+                        AND ps.payment_year = %s
+                        AND ps.payment_month = %s
+                    ORDER BY ps.due_date DESC
+                """, (room_number, year, month))
+                
+                results = cur.fetchall()
+                logger.info(f"查詢房間租金記錄: {room_number} {year}/{month} - {len(results)} 筆")
+                return [dict(r) for r in results]
+        
+        except Exception as e:
+            logger.error(f"查詢房間租金記錄失敗: {str(e)}", exc_info=True)
+            return []
     
     def get_payment_summary(self, year: int, month: int) -> Dict:
         """取得租金摘要統計
@@ -168,7 +191,7 @@ class PaymentRepository:
         Args:
             year: 年份
             month: 月份
-            
+        
         Returns:
             包含統計數據的字典：
             {
@@ -182,9 +205,8 @@ class PaymentRepository:
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("""
-                SELECT 
+                SELECT
                     COUNT(*) as total_count,
                     SUM(amount) as total_expected,
                     SUM(CASE WHEN status = 'paid' THEN paid_amount ELSE 0 END) as total_received,
@@ -224,15 +246,12 @@ class PaymentRepository:
         """取得所有逾期未繳的租金記錄"""
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("""
                 SELECT * FROM payment_schedule
                 WHERE status = 'unpaid' AND due_date < CURRENT_DATE
                 ORDER BY due_date ASC
             """)
-            
             results = cur.fetchall()
-            
             return [dict(r) for r in results]
     
     def batch_mark_paid(self, payment_ids: List[int], paid_amount: float = None) -> Dict:
@@ -241,7 +260,7 @@ class PaymentRepository:
         Args:
             payment_ids: 要標記的 payment ID 列表
             paid_amount: 繳款金額（None 表示使用原應繳金額）
-            
+        
         Returns:
             {'success': 成功筆數, 'failed': 失敗筆數}
         """
@@ -256,8 +275,8 @@ class PaymentRepository:
                     if paid_amount is not None:
                         cur.execute("""
                             UPDATE payment_schedule
-                            SET status = 'paid', 
-                                paid_amount = %s, 
+                            SET status = 'paid',
+                                paid_amount = %s,
                                 paid_date = CURRENT_DATE,
                                 updated_at = NOW()
                             WHERE id = %s
@@ -265,8 +284,8 @@ class PaymentRepository:
                     else:
                         cur.execute("""
                             UPDATE payment_schedule
-                            SET status = 'paid', 
-                                paid_amount = amount, 
+                            SET status = 'paid',
+                                paid_amount = amount,
                                 paid_date = CURRENT_DATE,
                                 updated_at = NOW()
                             WHERE id = %s
@@ -276,11 +295,11 @@ class PaymentRepository:
                         success_count += 1
                     else:
                         failed_count += 1
-                        
+                
                 except Exception as e:
                     failed_count += 1
-            
-            return {'success': success_count, 'failed': failed_count}
+        
+        return {'success': success_count, 'failed': failed_count}
     
     def get_tenant_payment_history(self, room_number: str, limit: int = 12) -> List[Dict]:
         """取得房客繳款歷史
@@ -288,25 +307,22 @@ class PaymentRepository:
         Args:
             room_number: 房號
             limit: 限制筆數
-            
+        
         Returns:
             繳款歷史列表
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor(cursor_factory=RealDictCursor)
-            
             cur.execute("""
                 SELECT 
-                    payment_year, payment_month, amount, 
+                    payment_year, payment_month, amount,
                     paid_amount, status, paid_date, due_date, notes
                 FROM payment_schedule
                 WHERE room_number = %s
                 ORDER BY payment_year DESC, payment_month DESC
                 LIMIT %s
             """, (room_number, limit))
-            
             results = cur.fetchall()
-            
             return [dict(r) for r in results]
     
     def update_overdue_status(self) -> int:
@@ -317,16 +333,13 @@ class PaymentRepository:
         """
         with self.db.get_connection() as conn:
             cur = conn.cursor()
-            
             cur.execute("""
                 UPDATE payment_schedule
                 SET status = 'overdue', updated_at = NOW()
-                WHERE status = 'unpaid' 
+                WHERE status = 'unpaid'
                   AND due_date < CURRENT_DATE
             """)
-            
             updated_count = cur.rowcount
-            
             return updated_count
     
     def get_all_payments(self, year: Optional[int] = None, 
@@ -338,7 +351,7 @@ class PaymentRepository:
             year: 年份篩選（可選）
             month: 月份篩選（可選）
             status: 狀態篩選（可選）
-            
+        
         Returns:
             租金記錄列表
         """
@@ -370,5 +383,4 @@ class PaymentRepository:
             
             cur.execute(query, tuple(params))
             results = cur.fetchall()
-            
             return [dict(r) for r in results]
