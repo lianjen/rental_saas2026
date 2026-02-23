@@ -1,5 +1,5 @@
 """
-儀表板 - 重構版 v3.1 (Supabase Compatible)
+儀表板 - 重構版 v3.2 (Supabase Compatible)
 特性:
 - ✅ 使用 Service 架構
 - ✅ 修復 DataFrame 布林判斷錯誤
@@ -9,6 +9,7 @@
 - ✅ 動態房間數
 - ✅ 統一日期處理
 - ✅ 完全適配 Supabase 欄位結構
+- ✅ [FIX] rent_amount → rent, move_out_date → lease_end
 """
 
 import streamlit as st
@@ -121,7 +122,7 @@ def safe_parse_date(date_value) -> Optional[date]:
     安全解析日期
     
     Args:
-        date_value: 日期值 (可能是 str, date, datetime, None)
+        date_value: 日期値 (可能是 str, date, datetime, None)
     
     Returns:
         date 物件或 None
@@ -218,14 +219,14 @@ def get_expiring_leases(df_tenants: pd.DataFrame, days: int = 45) -> List[Dict]:
     warning_date = today + timedelta(days=days)
     
     for _, tenant in df_tenants.iterrows():
-        # ✅ 修正：lease_end → move_out_date
-        lease_end = safe_parse_date(tenant.get('move_out_date'))
+        # ✅ 欄位名稱統一為 lease_end
+        lease_end = safe_parse_date(tenant.get('lease_end'))
         
         if lease_end and today <= lease_end <= warning_date:
             days_left = (lease_end - today).days
             expiring.append({
                 'room': tenant['room_number'],
-                'tenant': tenant['name'],  # ✅ 修正：tenant_name → name
+                'tenant': tenant['name'],
                 'lease_end': lease_end,
                 'days_left': days_left
             })
@@ -298,7 +299,6 @@ def render_lease_alerts(expiring_leases: List[Dict]):
     if urgent:
         st.error(f"🚨 緊急: {len(urgent)} 個租約 14 天內到期")
         for lease in urgent:
-            # ✅ 修復：先建立字串，再用 f-string
             days_text = f"{lease['days_left']} 天"
             st.markdown(
                 f"**{lease['room']}** - {lease['tenant']} | "
@@ -310,7 +310,6 @@ def render_lease_alerts(expiring_leases: List[Dict]):
     if warning:
         st.warning(f"⚠️ 注意: {len(warning)} 個租約 30 天內到期")
         for lease in warning:
-            # ✅ 修復：先建立字串，再用 f-string
             days_text = f"{lease['days_left']} 天"
             st.markdown(
                 f"**{lease['room']}** - {lease['tenant']} | "
@@ -323,7 +322,6 @@ def render_lease_alerts(expiring_leases: List[Dict]):
         st.info(f"ℹ️ 提醒: {len(notice)} 個租約 45 天內到期")
         with st.expander("查看詳情"):
             for lease in notice:
-                # ✅ 修復：先建立字串，再用 f-string
                 days_text = f"{lease['days_left']} 天"
                 st.markdown(
                     f"**{lease['room']}** - {lease['tenant']} | "
@@ -346,8 +344,8 @@ def render_room_status(df_tenants: pd.DataFrame):
     if isinstance(df_tenants, pd.DataFrame) and not df_tenants.empty:
         for _, tenant in df_tenants.iterrows():
             room = tenant['room_number']
-            # ✅ 修正：lease_end → move_out_date
-            lease_end = safe_parse_date(tenant.get('move_out_date'))
+            # ✅ 欄位名稱統一為 lease_end
+            lease_end = safe_parse_date(tenant.get('lease_end'))
             
             # 判斷狀態
             if lease_end and lease_end <= warning_date:
@@ -356,9 +354,10 @@ def render_room_status(df_tenants: pd.DataFrame):
                 status = 'occupied'
             
             room_status[room] = {
-                'tenant': tenant['name'],  # ✅ 修正：tenant_name → name
+                'tenant': tenant['name'],
                 'status': status,
-                'rent': tenant.get('rent_amount', 0)  # ✅ 修正：base_rent → rent_amount
+                # ✅ 欄位名稱統一為 rent
+                'rent': tenant.get('rent', 0)
             }
     
     # 渲染房間卡片 (每行 3 個)
