@@ -1,5 +1,6 @@
 """
 UI 元件庫 - 統一視覺風格
+✅ [FIX v1.1] data_table: use_container_width → width="stretch" (移除棄用警告)
 """
 
 import streamlit as st
@@ -9,12 +10,12 @@ from typing import Optional
 def section_header(title: str, icon: str = "📌", divider: bool = True):
     """
     區段標題
-    
+
     Args:
         title: 標題文字
         icon: 圖示 emoji
         divider: 是否顯示分隔線
-    
+
     Usage:
         section_header("房客管理", "👥")
     """
@@ -23,11 +24,11 @@ def section_header(title: str, icon: str = "📌", divider: bool = True):
         st.divider()
 
 
-def metric_card(label: str, value: str, delta: Optional[str] = None, 
+def metric_card(label: str, value: str, delta: Optional[str] = None,
                 icon: str = "📊", color: str = "normal"):
     """
     指標卡片
-    
+
     Args:
         label: 標籤
         value: 數值
@@ -41,9 +42,9 @@ def metric_card(label: str, value: str, delta: Optional[str] = None,
         'warning': '#ff7f0e',
         'error': '#d62728'
     }
-    
+
     bg_color = color_map.get(color, color_map['normal'])
-    
+
     st.markdown(f"""
         <div style="
             background: linear-gradient(135deg, {bg_color}22 0%, {bg_color}11 100%);
@@ -66,7 +67,7 @@ def metric_card(label: str, value: str, delta: Optional[str] = None,
 def status_badge(text: str, status: str = "default"):
     """
     狀態徽章
-    
+
     Args:
         text: 顯示文字
         status: 'success', 'warning', 'error', 'info', 'default'
@@ -78,9 +79,9 @@ def status_badge(text: str, status: str = "default"):
         'info': ('#d1ecf1', '#0c5460'),
         'default': ('#e2e3e5', '#383d41')
     }
-    
+
     bg, fg = colors.get(status, colors['default'])
-    
+
     return f"""
         <span style="
             background-color: {bg};
@@ -94,11 +95,11 @@ def status_badge(text: str, status: str = "default"):
     """
 
 
-def info_card(title: str, content: str, icon: str = "ℹ️", 
+def info_card(title: str, content: str, icon: str = "ℹ️",
               type: str = "info"):
     """
     資訊卡片
-    
+
     Args:
         title: 標題
         content: 內容
@@ -111,9 +112,9 @@ def info_card(title: str, content: str, icon: str = "ℹ️",
         'warning': ('#fff3cd', '#664d03'),
         'error': ('#f8d7da', '#842029')
     }
-    
+
     bg, border = type_colors.get(type, type_colors['info'])
-    
+
     st.markdown(f"""
         <div style="
             background-color: {bg};
@@ -132,11 +133,11 @@ def info_card(title: str, content: str, icon: str = "ℹ️",
     """, unsafe_allow_html=True)
 
 
-def room_status_card(room: str, tenant_name: Optional[str], 
+def room_status_card(room: str, tenant_name: Optional[str],
                      status: str, rent: Optional[float] = None):
     """
     房間狀態卡片
-    
+
     Args:
         room: 房號
         tenant_name: 房客名稱
@@ -148,9 +149,9 @@ def room_status_card(room: str, tenant_name: Optional[str],
         'vacant': ('⚪', '空房', '#e2e3e5', '#6c757d'),
         'warning': ('🟡', '即將到期', '#fff3cd', '#856404')
     }
-    
+
     icon, status_text, bg, border = status_config.get(status, status_config['vacant'])
-    
+
     tenant_info = f"""
         <div style="font-size: 1rem; font-weight: 500; margin: 0.5rem 0;">
             {tenant_name}
@@ -159,7 +160,7 @@ def room_status_card(room: str, tenant_name: Optional[str],
             月租: ${rent:,} 元
         </div>
     """ if tenant_name else '<div style="color: #999; font-style: italic;">待出租</div>'
-    
+
     st.markdown(f"""
         <div style="
             background-color: {bg};
@@ -185,14 +186,14 @@ def room_status_card(room: str, tenant_name: Optional[str],
 def data_table(df, key: str = "table"):
     """
     美化的資料表格
-    
+
     Args:
         df: pandas DataFrame
         key: unique key for the table
     """
     st.dataframe(
         df,
-        use_container_width=True,
+        width="stretch",                         # ✅ FIX: use_container_width=True → width="stretch"
         height=min(400, len(df) * 35 + 38),
         key=key
     )
@@ -201,7 +202,7 @@ def data_table(df, key: str = "table"):
 def empty_state(message: str, icon: str = "📭", suggestion: Optional[str] = None):
     """
     空狀態提示
-    
+
     Args:
         message: 提示訊息
         icon: 圖示
@@ -227,7 +228,7 @@ def empty_state(message: str, icon: str = "📭", suggestion: Optional[str] = No
 def loading_spinner(text: str = "載入中..."):
     """
     載入指示器
-    
+
     Args:
         text: 提示文字
     """
@@ -237,14 +238,14 @@ def loading_spinner(text: str = "載入中..."):
 def confirm_dialog(message: str, key: str) -> bool:
     """
     確認對話框 (需配合 session_state)
-    
+
     Args:
         message: 確認訊息
         key: session_state key
-    
+
     Returns:
         bool: 是否已確認
-    
+
     Usage:
         if st.button("刪除"):
             if confirm_dialog("確定要刪除嗎?", "delete_confirm"):
@@ -269,7 +270,7 @@ def confirm_dialog(message: str, key: str) -> bool:
 def progress_bar(current: int, total: int, label: str = ""):
     """
     進度條
-    
+
     Args:
         current: 當前進度
         total: 總數
