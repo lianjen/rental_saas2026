@@ -1,5 +1,5 @@
 """
-房客管理 - v5.1 (欄位名稱修正)
+房客管理 - v5.2 (型別修正)
 ✅ 整合認證系統
 ✅ 登入保護
 ✅ 整合 Pydantic 驗證層
@@ -10,6 +10,7 @@
 ✅ 刪除確認優化
 ✅ 適配 Supabase 欄位
 ✅ [FIX] 統一欄位名稱: rent/deposit/lease_start/lease_end
+✅ [FIX] st.number_input 型別一致（min_value 改為 0.0）
 """
 import streamlit as st
 import pandas as pd
@@ -216,16 +217,16 @@ def render_add_tab(tenant_service: TenantService):
         with col2:
             rent_input = st.number_input(
                 "月租 *",
-                min_value=0,
-                value=6000,
-                step=500,
+                min_value=0.0,  # ✅ 改為 float
+                value=6000.0,
+                step=500.0,
                 key="add_rent"
             )
             deposit_input = st.number_input(
                 "押金 *",
-                min_value=0,
-                value=12000,
-                step=1000,
+                min_value=0.0,  # ✅ 改為 float
+                value=12000.0,
+                step=1000.0,
                 key="add_deposit"
             )
             lease_start_input = st.date_input(
@@ -482,18 +483,18 @@ def render_edit_tab(tenant_service: TenantService):
                 )
 
             with col2:
-                # ✅ 改用 DB 實際欄位 'rent'
+                # ✅ 改用 DB 實際欄位 'rent' + 統一 float 型別
                 rent_input = st.number_input(
                     "月租 *",
-                    min_value=0,
+                    min_value=0.0,  # ✅ 改為 float
                     value=_safe_float(tenant_data.get('rent'), 6000.0),
                     step=500.0,
                     key=f"edit_rent_{tenant_id}"
                 )
-                # ✅ 改用 DB 實際欄位 'deposit'
+                # ✅ 改用 DB 實際欄位 'deposit' + 統一 float 型別
                 deposit_input = st.number_input(
                     "押金 *",
-                    min_value=0,
+                    min_value=0.0,  # ✅ 改為 float
                     value=_safe_float(tenant_data.get('deposit'), 12000.0),
                     step=1000.0,
                     key=f"edit_deposit_{tenant_id}"
