@@ -1,12 +1,16 @@
 """
-電費管理服務 - v4.3 Final (Supabase Compatible)
+電費管理服務 - v4.4
 ✅ 完整的電費期間管理
 ✅ 電表讀數儲存（含計費資訊）
 ✅ 計費記錄管理
 ✅ 整合通知服務
 ✅ 提供給追蹤頁面的高階查詢 API（get_period_records）
 ✅ 完全適配 Supabase 表結構（使用 electricity_readings）
-✅ 修正：儲存完整計費資訊，確保資料一致性
+✅ [FIX v4.4] 新增 mark_paid / mark_unpaid
+✅ [FIX v4.4] get_payment_record 讀取真實繳費狀態（不再 hardcode）
+✅ [FIX v4.4] get_payment_summary 讀取真實繳費統計
+✅ [FIX v4.4] save_reading ON CONFLICT 不覆蓋 payment_status
+✅ [FIX v4.4] get_all_readings 含 payment_status 欄位
 """
 
 import pandas as pd
@@ -31,11 +35,8 @@ class ElectricityService(BaseDBService):
         month_start: int,
         month_end: int,
     ) -> Tuple[bool, str, Optional[int]]:
-        """
-        新增電費期間
-        """
+        """新增電費期間"""
         try:
-            # 驗證輸入
             if not (1 <= month_start <= 12 and 1 <= month_end <= 12):
                 return False, "❌ 月份必須在 1-12 之間", None
 
@@ -45,7 +46,6 @@ class ElectricityService(BaseDBService):
             with self.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # 檢查是否已存在
                 cursor.execute(
                     """
                     SELECT COUNT(*) FROM electricity_periods
@@ -73,9 +73,7 @@ class ElectricityService(BaseDBService):
                 conn.commit()
 
                 log_db_operation("INSERT", "electricity_periods", True, 1)
-                logger.info(
-                    f"✅ 建立期間 ID {period_id}: {year}/{month_start}-{month_end}"
-                )
+                logger.info(f"✅ 建立期間 ID {period_id}: {year}/{month_start}-{month_end}")
                 return True, f"✅ 已建立 {year} 年 {month_start}-{month_end} 月", period_id
 
         except Exception as e:
@@ -173,7 +171,6 @@ class ElectricityService(BaseDBService):
             with self.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # 檢查是否存在
                 cursor.execute(
                     "SELECT COUNT(*) FROM electricity_periods WHERE id = %s",
                     (period_id,),
@@ -181,7 +178,6 @@ class ElectricityService(BaseDBService):
                 if cursor.fetchone()[0] == 0:
                     return False, f"❌ 期間 ID {period_id} 不存在"
 
-                # 檢查是否有關聯記錄
                 cursor.execute(
                     "SELECT COUNT(*) FROM electricity_readings WHERE period_id = %s",
                     (period_id,),
@@ -213,7 +209,6 @@ class ElectricityService(BaseDBService):
     ) -> Tuple[bool, str]:
         """更新催繳開始日"""
         try:
-            # 驗證日期格式
             try:
                 datetime.strptime(remind_date, "%Y-%m-%d")
             except ValueError:
@@ -251,9 +246,7 @@ class ElectricityService(BaseDBService):
         room: str,
         period_id: int,
     ) -> Optional[float]:
-        """
-        取得指定房間在「之前期間」的最後一次本期讀數
-        """
+        """取得指定房間在「之前期間」的最後一次本期讀數"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -282,7 +275,10 @@ class ElectricityService(BaseDBService):
             return None
 
     def get_all_readings(self, period_id: int) -> List[Dict]:
-        """取得特定期間的所有電表讀數"""
+        """
+        取得特定期間的所有電表讀數
+        ✅ [FIX v4.4] 新增 payment_status / paid_amount / paid_at 欄位
+        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -294,6 +290,9 @@ class ElectricityService(BaseDBService):
                         previous_reading,
                         current_reading,
                         kwh_used,
+                        COALESCE(payment_status, 'unpaid') AS payment_status,
+                        COALESCE(paid_amount, 0)           AS paid_amount,
+                        paid_at,
                         created_at
                     FROM electricity_readings
                     WHERE period_id = %s
@@ -323,23 +322,16 @@ class ElectricityService(BaseDBService):
         unit_price: float = 0.0,
         public_share_kwh: int = 0,
         amount_due: int = 0,
-        room_type: str = "unknown"
+        room_type: str = "unknown",
     ) -> Tuple[bool, str]:
         """
         儲存電表讀數（含完整計費資訊）
-        
-        ✅ v4.3 新增參數：
-        - unit_price: 電費單價 (元/度)
-        - public_share_kwh: 公用電分攤度數
-        - amount_due: 應繳金額 (元)
-        - room_type: 房間類型 (獨立房間/分攤房間)
+        ✅ [FIX v4.4] ON CONFLICT 不覆蓋 payment_status / paid_amount / paid_at
+                      避免重新存讀數時把「已繳」洗回「unpaid」
         """
         try:
-            # 驗證讀數邏輯
             if current < previous:
-                logger.warning(
-                    f"⚠️ {room}: 本期讀數 ({current}) < 上期讀數 ({previous})"
-                )
+                logger.warning(f"⚠️ {room}: 本期讀數 ({current}) < 上期讀數 ({previous})")
                 return False, f"❌ {room}: 本期讀數不能小於上期讀數"
 
             if abs((current - previous) - kwh_used) > 0.01:
@@ -354,22 +346,30 @@ class ElectricityService(BaseDBService):
                 cursor.execute(
                     """
                     INSERT INTO electricity_readings
-                        (period_id, room_number, previous_reading, current_reading, 
-                         kwh_used, unit_price, public_share_kwh, total_kwh, amount_due, room_type)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        (period_id, room_number, previous_reading, current_reading,
+                         kwh_used, unit_price, public_share_kwh, total_kwh,
+                         amount_due, room_type,
+                         payment_status, paid_amount, paid_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                            'unpaid', 0, NULL)
                     ON CONFLICT (period_id, room_number) DO UPDATE SET
                         previous_reading = EXCLUDED.previous_reading,
-                        current_reading = EXCLUDED.current_reading,
-                        kwh_used = EXCLUDED.kwh_used,
-                        unit_price = EXCLUDED.unit_price,
+                        current_reading  = EXCLUDED.current_reading,
+                        kwh_used         = EXCLUDED.kwh_used,
+                        unit_price       = EXCLUDED.unit_price,
                         public_share_kwh = EXCLUDED.public_share_kwh,
-                        total_kwh = EXCLUDED.total_kwh,
-                        amount_due = EXCLUDED.amount_due,
-                        room_type = EXCLUDED.room_type,
-                        updated_at = NOW()
+                        total_kwh        = EXCLUDED.total_kwh,
+                        amount_due       = EXCLUDED.amount_due,
+                        room_type        = EXCLUDED.room_type,
+                        updated_at       = NOW()
+                    -- ✅ 刻意不更新 payment_status / paid_amount / paid_at
+                    -- 重新計算讀數不應覆蓋已完成的繳費記錄
                     """,
-                    (period_id, room, previous, current, kwh_used,
-                     unit_price, public_share_kwh, total_kwh, amount_due, room_type),
+                    (
+                        period_id, room, previous, current, kwh_used,
+                        unit_price, public_share_kwh, total_kwh,
+                        amount_due, room_type,
+                    ),
                 )
 
                 conn.commit()
@@ -385,12 +385,106 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 儲存失敗: {str(e)}")
             return False, f"❌ {str(e)[:100]}"
 
+    # ==================== 繳費狀態更新 ====================
+
+    def mark_paid(
+        self,
+        period_id: int,
+        room_number: str,
+        paid_amount: int,
+        payment_date: str,
+    ) -> Tuple[bool, str]:
+        """
+        ✅ [NEW v4.4] 標記電費已繳
+        直接更新 electricity_readings 的 payment_status
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    """
+                    UPDATE electricity_readings
+                    SET
+                        payment_status = 'paid',
+                        paid_amount    = %s,
+                        paid_at        = %s,
+                        updated_at     = NOW()
+                    WHERE period_id = %s AND room_number = %s
+                    """,
+                    (paid_amount, payment_date, period_id, room_number),
+                )
+
+                if cursor.rowcount == 0:
+                    return (
+                        False,
+                        f"❌ 找不到 {room_number} 的電費記錄"
+                        f"（period_id={period_id}）",
+                    )
+
+                conn.commit()
+                log_db_operation("UPDATE", "electricity_readings (mark_paid)", True, 1)
+                logger.info(
+                    f"✅ 電費已繳: {room_number} - ${paid_amount:,} (period {period_id})"
+                )
+                return True, f"✅ {room_number} 已標記為已繳"
+
+        except Exception as e:
+            log_db_operation(
+                "UPDATE", "electricity_readings (mark_paid)", False, error=str(e)
+            )
+            logger.error(f"❌ 標記電費失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}"
+
+    def mark_unpaid(
+        self,
+        period_id: int,
+        room_number: str,
+    ) -> Tuple[bool, str]:
+        """
+        ✅ [NEW v4.4] 取消已繳（反標記）
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                cursor.execute(
+                    """
+                    UPDATE electricity_readings
+                    SET
+                        payment_status = 'unpaid',
+                        paid_amount    = 0,
+                        paid_at        = NULL,
+                        updated_at     = NOW()
+                    WHERE period_id = %s AND room_number = %s
+                    """,
+                    (period_id, room_number),
+                )
+
+                if cursor.rowcount == 0:
+                    return False, f"❌ 找不到 {room_number} 的電費記錄"
+
+                conn.commit()
+                log_db_operation(
+                    "UPDATE", "electricity_readings (mark_unpaid)", True, 1
+                )
+                logger.info(f"✅ 電費取消已繳: {room_number} (period {period_id})")
+                return True, f"✅ {room_number} 已取消已繳狀態"
+
+        except Exception as e:
+            log_db_operation(
+                "UPDATE", "electricity_readings (mark_unpaid)", False, error=str(e)
+            )
+            logger.error(f"❌ 取消標記失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}"
+
     # ==================== 計費記錄查詢 ====================
 
     def get_payment_record(self, period_id: int) -> Optional[pd.DataFrame]:
         """
         查詢指定期間的電費計費記錄（DataFrame 版本）
-        ✅ v4.3 修正：從 electricity_readings 讀取完整計費資訊
+        ✅ [FIX v4.4] 讀取真實 payment_status / paid_amount / paid_at
+                      不再 hardcode '⏳ 未繳' / 0
         """
         try:
             with self.get_connection() as conn:
@@ -400,17 +494,23 @@ class ElectricityService(BaseDBService):
                     """
                     SELECT
                         er.id,
-                        er.room_number AS 房號,
-                        t.name AS 租客姓名,
-                        er.previous_reading AS 上期讀數,
-                        er.current_reading AS 本期讀數,
-                        er.kwh_used AS 使用度數,
-                        COALESCE(er.public_share_kwh, 0) AS 公用分攤,
-                        COALESCE(er.total_kwh, er.kwh_used) AS 總度數,
-                        COALESCE(er.amount_due, 0) AS 應繳金額,
-                        0 AS 已繳金額,
-                        '⏳ 未繳' AS 繳費狀態,
-                        NULL AS 繳費日期,
+                        er.room_number                                              AS 房號,
+                        t.name                                                      AS 租客姓名,
+                        er.previous_reading                                         AS 上期讀數,
+                        er.current_reading                                          AS 本期讀數,
+                        er.kwh_used                                                 AS 使用度數,
+                        COALESCE(er.public_share_kwh, 0)                            AS 公用分攤,
+                        COALESCE(er.total_kwh, er.kwh_used)                         AS 總度數,
+                        COALESCE(er.unit_price, 0)                                  AS 單價,
+                        COALESCE(er.room_type, 'unknown')                           AS 類型,
+                        COALESCE(er.amount_due, 0)                                  AS 應繳金額,
+                        COALESCE(er.paid_amount, 0)                                 AS 已繳金額,
+                        CASE
+                            WHEN COALESCE(er.payment_status, 'unpaid') = 'paid'
+                            THEN '✅ 已繳'
+                            ELSE '⏳ 未繳'
+                        END                                                         AS 繳費狀態,
+                        er.paid_at                                                  AS 繳費日期,
                         ep.period_year,
                         ep.period_month_start,
                         ep.period_month_end
@@ -452,7 +552,10 @@ class ElectricityService(BaseDBService):
         return df
 
     def get_payment_summary(self, period_id: int) -> Optional[Dict]:
-        """取得電費統計摘要"""
+        """
+        取得電費統計摘要
+        ✅ [FIX v4.4] 從真實 payment_status 統計，不再 hardcode 0
+        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -460,12 +563,18 @@ class ElectricityService(BaseDBService):
                 cursor.execute(
                     """
                     SELECT
-                        COUNT(*) as total_count,
-                        SUM(COALESCE(amount_due, 0)) as total_due,
-                        0 as total_paid,
-                        0 as paid_count,
-                        SUM(COALESCE(amount_due, 0)) as total_balance,
-                        SUM(kwh_used) as total_kwh_used
+                        COUNT(*)                                                        AS total_count,
+                        SUM(COALESCE(amount_due, 0))                                    AS total_due,
+                        SUM(COALESCE(paid_amount, 0))                                   AS total_paid,
+                        COUNT(
+                            CASE WHEN COALESCE(payment_status, 'unpaid') = 'paid'
+                                 THEN 1 END
+                        )                                                               AS paid_count,
+                        SUM(
+                            CASE WHEN COALESCE(payment_status, 'unpaid') = 'unpaid'
+                                 THEN COALESCE(amount_due, 0) ELSE 0 END
+                        )                                                               AS total_balance,
+                        SUM(kwh_used)                                                   AS total_kwh_used
                     FROM electricity_readings
                     WHERE period_id = %s
                     """,
@@ -478,30 +587,25 @@ class ElectricityService(BaseDBService):
                     logger.info(f"📭 期間 {period_id} 無統計數據")
                     return None
 
-                total_count = int(row[0])
-                paid_count = int(row[3] or 0)
-                payment_rate = (
-                    paid_count / total_count * 100 if total_count > 0 else 0
-                )
+                total_count  = int(row[0])
+                paid_count   = int(row[3] or 0)
+                payment_rate = paid_count / total_count * 100 if total_count > 0 else 0
 
                 summary = {
-                    "total_count": total_count,
-                    "paid_count": paid_count,
-                    "unpaid_count": total_count - paid_count,
-                    "total_due": int(row[1] or 0),
-                    "total_paid": int(row[2] or 0),
-                    "total_balance": int(row[4] or 0),
+                    "total_count":    total_count,
+                    "paid_count":     paid_count,
+                    "unpaid_count":   total_count - paid_count,
+                    "total_due":      int(row[1] or 0),
+                    "total_paid":     int(row[2] or 0),
+                    "total_balance":  int(row[4] or 0),
                     "total_kwh_used": float(row[5] or 0),
-                    "payment_rate": round(payment_rate, 1),
+                    "payment_rate":   round(payment_rate, 1),
                 }
 
-                log_db_operation(
-                    "SELECT", "electricity_readings (summary)", True, 1
-                )
+                log_db_operation("SELECT", "electricity_readings (summary)", True, 1)
                 logger.info(
                     f"📊 繳費率: {payment_rate:.1f}% ({paid_count}/{total_count})"
                 )
-
                 return summary
 
         except Exception as e:
@@ -511,17 +615,14 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 統計失敗: {str(e)}")
             return None
 
-    # ==================== 以下方法已廢棄（因為 electricity_records 表未使用）====================
+    # ==================== 廢棄方法（保留簽名供向後相容）====================
 
     def save_records(
         self,
         period_id: int,
         calc_results: List[Dict],
     ) -> Tuple[bool, str]:
-        """
-        ⚠️ 已廢棄：原本用於儲存到 electricity_records 表
-        現在所有資料都存在 electricity_readings 表
-        """
+        """⚠️ 已廢棄：請使用 save_reading"""
         logger.warning("⚠️ save_records 方法已廢棄，請使用 save_reading")
         return False, "❌ 此功能已停用"
 
@@ -533,9 +634,18 @@ class ElectricityService(BaseDBService):
         paid_amount: int,
         payment_date: str,
     ) -> Tuple[bool, str]:
-        """⚠️ 已廢棄：electricity_records 表未使用"""
-        logger.warning("⚠️ update_payment 方法已廢棄")
-        return False, "❌ 此功能已停用"
+        """
+        ⚠️ 已廢棄，自動轉導到 mark_paid / mark_unpaid
+        ✅ [FIX v4.4] 不再直接 return False，改為向後相容轉導
+        """
+        logger.warning(
+            "⚠️ update_payment 已廢棄，請改用 mark_paid / mark_unpaid"
+        )
+        if new_status == "paid":
+            return self.mark_paid(period_id, room_number, paid_amount, payment_date)
+        elif new_status == "unpaid":
+            return self.mark_unpaid(period_id, room_number)
+        return False, f"❌ 未知狀態: {new_status}"
 
     def batch_update_payments(
         self,
