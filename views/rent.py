@@ -1,10 +1,11 @@
 """
-租金管理頁面 v3.1 (欄位名稱修正)
+租金管理頁面 v3.2 (use_container_width 棄用修正)
 ✅ 完全移除 db 依賴
 ✅ 使用正確的 Service 方法
 ✅ 優化錯誤處理
 ✅ 統一入口函數
 ✅ [FIX] tenant_name → name, base_rent → rent (對齊 tenant_service v5.3)
+✅ [FIX v3.2] use_container_width → width="stretch" (移除棄用警告)
 """
 import streamlit as st
 from datetime import datetime, date
@@ -58,9 +59,9 @@ def render_rent_page():
 
 # ==================== Tab 1: 批量建立排程 ====================
 def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: TenantService):
-    """批量建立排程頁籤 v3.1"""
+    """批量建立排程頁籤 v3.2"""
 
-    st.subheader("📅 批量建立月租金排程 v3.1")
+    st.subheader("📅 批量建立月租金排程 v3.2")
     st.caption("💡 選擇特定房間，一次建立多個月份的租金記錄")
 
     st.divider()
@@ -90,14 +91,14 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
     with col_mode1:
         mode_all = st.button(
             "🏘️ 全部房間",
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 1
             help="為所有現有房客建立租金記錄"
         )
 
     with col_mode2:
         mode_select = st.button(
             "🏠 選擇房間",
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 2
             type="primary",
             help="選擇特定房間建立租金記錄"
         )
@@ -252,7 +253,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
 
         st.dataframe(
             preview_data,
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 3
             hide_index=True
         )
 
@@ -265,7 +266,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
         if st.button(
             f"🚀 一鍵建立排程（{total_records} 筆）",
             type="primary",
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 4
             key="batch_create_btn"
         ):
             with st.spinner("正在建立租金記錄..."):
@@ -350,7 +351,10 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
                     logger.error(f"批量建立租金記錄異常: {str(e)}", exc_info=True)
 
     with col_btn2:
-        if st.button("🔄 重置", use_container_width=True):
+        if st.button(
+            "🔄 重置",
+            width="stretch"                      # ✅ FIX 5
+        ):
             if 'selected_rooms_for_batch' in st.session_state:
                 del st.session_state['selected_rooms_for_batch']
             st.session_state.batch_mode = 'select'
@@ -482,7 +486,7 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
         }
         st.dataframe(
             df[available_cols].rename(columns=rename_map),
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 6
             hide_index=True
         )
 
@@ -515,7 +519,7 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
                     f"✅ 標記 ({len(selected_ids)})",
                     type="primary",
                     disabled=len(selected_ids) == 0,
-                    use_container_width=True,
+                    width="stretch",             # ✅ FIX 7
                     key="monthly_mark_paid"
                 ):
                     with st.spinner("處理中..."):
@@ -599,7 +603,7 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
         }
         st.dataframe(
             df[available_cols].rename(columns=rename_map),
-            use_container_width=True,
+            width="stretch",                     # ✅ FIX 8
             hide_index=True
         )
 
@@ -628,7 +632,7 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
                     f"✅ 標記 ({len(selected_ids)})",
                     type="primary",
                     disabled=len(selected_ids) == 0,
-                    use_container_width=True
+                    width="stretch"              # ✅ FIX 9
                 ):
                     with st.spinner("處理中..."):
                         try:
@@ -699,7 +703,11 @@ def render_tenant_history_report(payment_service: PaymentService, tenant_service
                 'status', 'paid_date', 'due_date'
             ]
             display_cols = [c for c in available_cols_list if c in df.columns]
-            st.dataframe(df[display_cols], use_container_width=True, hide_index=True)
+            st.dataframe(
+                df[display_cols],
+                width="stretch",                 # ✅ FIX 10
+                hide_index=True
+            )
         else:
             st.info("此房客尚無繳款記錄")
 
