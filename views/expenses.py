@@ -1,8 +1,7 @@
 """
-支出記錄頁面 - v2.2
-✅ [FIX v2.2] add_expense 補入 user_id（修正 NOT NULL 報錯）
-✅ [FIX v2.2] width="stretch" → use_container_width=True（共 5 處）
-✅ v2.1 所有功能保留
+支出記錄頁面 - v2.3
+✅ [FIX v2.3] date= → expense_date=（兩處呼叫點，修正 unexpected keyword argument 錯誤）
+✅ v2.2 所有功能保留
 """
 
 import streamlit as st
@@ -47,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 def _get_user_id() -> str | None:
     """
-    ✅ [FIX v2.2] 統一從 session_state 取 user_id
+    統一從 session_state 取 user_id
     支援多種 key 命名（相容不同版本 session manager）
     """
     for key in ("user_id", "uid", "auth_user_id"):
@@ -77,11 +76,11 @@ def render_add_tab(expense_service: ExpenseService):
                     return
 
                 ok, msg = expense_service.add_expense(
-                    user_id  = user_id,           # ✅ FIX v2.2
-                    date     = pending["date"],
-                    category = pending["category"],
-                    amount   = pending["amount"],
-                    description = "無說明",
+                    user_id      = user_id,
+                    expense_date = pending["date"],       # ✅ FIX v2.3: date → expense_date
+                    category     = pending["category"],
+                    amount       = pending["amount"],
+                    description  = "無說明",
                 )
                 if ok:
                     st.success("✅ 新增成功")
@@ -133,11 +132,11 @@ def render_add_tab(expense_service: ExpenseService):
                     return
 
                 ok, msg = expense_service.add_expense(
-                    user_id     = user_id,        # ✅ FIX v2.2
-                    date        = expense_date.isoformat(),
-                    category    = category,
-                    amount      = amount,
-                    description = description,
+                    user_id      = user_id,
+                    expense_date = expense_date.isoformat(),  # ✅ FIX v2.3: date → expense_date
+                    category     = category,
+                    amount       = amount,
+                    description  = description,
                 )
                 if ok:
                     st.success("✅ 新增成功")
@@ -303,12 +302,12 @@ def render_list_tab(expense_service: ExpenseService):
         "amount_display": "金額",
         "description":    "說明",
     }
-    cols_to_show   = [c for c in ["id","expense_date","category","amount_display","description"]
-                      if c in display_df.columns]
+    cols_to_show = [c for c in ["id","expense_date","category","amount_display","description"]
+                    if c in display_df.columns]
 
     st.dataframe(
         display_df[cols_to_show].rename(columns=rename),
-        use_container_width=True,   # ✅ FIX 2
+        use_container_width=True,
         hide_index=True,
         key="expense_list",
     )
@@ -349,7 +348,7 @@ def render_stats_tab(expense_service: ExpenseService):
     df["year"]  = df["date"].dt.year
     df["month"] = df["date"].dt.month
 
-    # ── 月度分析 ──────────────────────────────────────────
+    # ── 月度分析 ────────────────────────────────────────────
     if stats_type == "月度分析":
         month    = st.selectbox("月份", range(1, 13),
                                 index=(date.today().month - 1), key="stats_month")
@@ -384,12 +383,12 @@ def render_stats_tab(expense_service: ExpenseService):
         cat_display["金額"] = cat_display["金額"].apply(lambda x: f"${x:,.0f}")
         st.dataframe(
             cat_display,
-            use_container_width=True,   # ✅ FIX 3
+            use_container_width=True,
             hide_index=True,
             key="month_category",
         )
 
-    # ── 年度總覽 ──────────────────────────────────────────
+    # ── 年度總覽 ────────────────────────────────────────────
     elif stats_type == "年度總覽":
         total_year = df["amount"].sum()
         count_year = len(df)
@@ -415,12 +414,12 @@ def render_stats_tab(expense_service: ExpenseService):
         monthly_display["金額"] = monthly_display["金額"].apply(lambda x: f"${x:,.0f}")
         st.dataframe(
             monthly_display,
-            use_container_width=True,   # ✅ FIX 4
+            use_container_width=True,
             hide_index=True,
             key="monthly_trend",
         )
 
-    # ── 類別分析 ──────────────────────────────────────────
+    # ── 類別分析 ────────────────────────────────────────────
     else:
         total_year = df["amount"].sum()
         st.write(f"**{stats_year} 年總支出：${total_year:,.0f}**")
@@ -445,7 +444,7 @@ def render_stats_tab(expense_service: ExpenseService):
         cat_disp["佔比"]   = cat_disp["佔比"].apply(lambda x: f"{x}%")
         st.dataframe(
             cat_disp,
-            use_container_width=True,   # ✅ FIX 5
+            use_container_width=True,
             hide_index=True,
             key="category_stats",
         )
