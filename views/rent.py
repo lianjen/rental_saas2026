@@ -1,15 +1,17 @@
 """
-租金管理頁面 v3.2 (use_container_width 棄用修正)
+租金管理頁面 v3.3
 ✅ 完全移除 db 依賴
 ✅ 使用正確的 Service 方法
 ✅ 優化錯誤處理
 ✅ 統一入口函數
 ✅ [FIX] tenant_name → name, base_rent → rent (對齊 tenant_service v5.3)
 ✅ [FIX v3.2] use_container_width → width="stretch" (移除棄用警告)
+✅ [FIX v3.3] st.progress Decimal 型別錯誤修正 (Decimal → float)
 """
 import streamlit as st
 from datetime import datetime, date
 from dateutil.relativedelta import relativedelta
+from decimal import Decimal
 from services.payment_service import PaymentService
 from services.tenant_service import TenantService
 from typing import List, Dict
@@ -17,6 +19,28 @@ import pandas as pd
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================
+# 輔助函數
+# ============================================
+
+def safe_float(value) -> float:
+    """
+    安全將任何數值型別轉換為 float。
+    修正 Supabase 回傳 Decimal 導致 st.progress / st.metric 崩潰的問題。
+    """
+    if value is None:
+        return 0.0
+    if isinstance(value, float):
+        return value
+    if isinstance(value, (int, Decimal)):
+        return float(value)
+    try:
+        return float(str(value).replace(',', '').replace('$', '').strip())
+    except (ValueError, TypeError):
+        logger.warning(f"safe_float: 無法轉換 {value!r}，回傳 0.0")
+        return 0.0
 
 
 # ============================================
@@ -91,14 +115,14 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
     with col_mode1:
         mode_all = st.button(
             "🏘️ 全部房間",
-            width="stretch",                     # ✅ FIX 1
+            width="stretch",
             help="為所有現有房客建立租金記錄"
         )
 
     with col_mode2:
         mode_select = st.button(
             "🏠 選擇房間",
-            width="stretch",                     # ✅ FIX 2
+            width="stretch",
             type="primary",
             help="選擇特定房間建立租金記錄"
         )
@@ -126,7 +150,6 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
             "請選擇要建立租金記錄的房間（可多選）",
             options=room_list,
             default=[],
-            # ✅ 修正: tenant_name → name, base_rent → rent
             format_func=lambda x: (
                 f"{x} - "
                 f"{tenants_by_room[x].get('name', '未知')} "
@@ -149,7 +172,6 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
             with cols[idx % num_cols]:
                 st.metric(
                     label=f"房間 {room}",
-                    # ✅ 修正: base_rent → rent, tenant_name → name
                     value=f"NT${tenant.get('rent', 0):,.0f}",
                     delta=tenant.get('name', '未知')
                 )
@@ -244,7 +266,6 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
             for month_info in month_range:
                 preview_data.append({
                     '房號': room,
-                    # ✅ 修正: tenant_name → name, base_rent → rent
                     '房客': tenant.get('name', '未知'),
                     '年份': month_info['year'],
                     '月份': f"{month_info['month']:02d}",
@@ -253,7 +274,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
 
         st.dataframe(
             preview_data,
-            width="stretch",                     # ✅ FIX 3
+            width="stretch",
             hide_index=True
         )
 
@@ -266,7 +287,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
         if st.button(
             f"🚀 一鍵建立排程（{total_records} 筆）",
             type="primary",
-            width="stretch",                     # ✅ FIX 4
+            width="stretch",
             key="batch_create_btn"
         ):
             with st.spinner("正在建立租金記錄..."):
@@ -353,7 +374,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
     with col_btn2:
         if st.button(
             "🔄 重置",
-            width="stretch"                      # ✅ FIX 5
+            width="stretch"
         ):
             if 'selected_rooms_for_batch' in st.session_state:
                 del st.session_state['selected_rooms_for_batch']
@@ -403,53 +424,60 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
             payments = payment_service.get_room_payments(selected_room, year, month)
             df_tmp = pd.DataFrame(payments) if payments else pd.DataFrame()
             if not df_tmp.empty:
-                total_expected = df_tmp['amount'].sum()
+                # ✅ [FIX v3.3] 全部轉 float，避免 Decimal 在 st.progress / metric delta 崩潰
+                total_expected = safe_float(df_tmp['amount'].sum())
                 paid_df = df_tmp[df_tmp['status'] == 'paid']
-                total_received = (
+                total_received = safe_float(
                     paid_df['paid_amount'].sum()
                     if not paid_df.empty and 'paid_amount' in paid_df.columns
                     else 0
                 )
-                unpaid_count = len(df_tmp[df_tmp['status'] == 'unpaid'])
-                overdue_count = len(df_tmp[df_tmp['status'] == 'overdue'])
-                collection_rate = total_received / total_expected if total_expected > 0 else 0
+                unpaid_count  = int(len(df_tmp[df_tmp['status'] == 'unpaid']))
+                overdue_count = int(len(df_tmp[df_tmp['status'] == 'overdue']))
+                collection_rate = total_received / total_expected if total_expected > 0 else 0.0
                 summary = {
-                    'total_expected': total_expected,
-                    'total_received': total_received,
-                    'unpaid_count': unpaid_count,
-                    'overdue_count': overdue_count,
-                    'collection_rate': collection_rate
+                    'total_expected':  total_expected,
+                    'total_received':  total_received,
+                    'unpaid_count':    unpaid_count,
+                    'overdue_count':   overdue_count,
+                    'collection_rate': collection_rate,  # 已是 float
                 }
             else:
                 summary = {
-                    'total_expected': 0, 'total_received': 0,
-                    'unpaid_count': 0, 'overdue_count': 0, 'collection_rate': 0
+                    'total_expected': 0.0, 'total_received': 0.0,
+                    'unpaid_count': 0, 'overdue_count': 0, 'collection_rate': 0.0
                 }
 
         # === 指標卡片 ===
         _s = lambda k: summary[k] if isinstance(summary, dict) else getattr(summary, k)
 
+        # ✅ [FIX v3.3] 所有數值先過 safe_float，統一型別
+        total_expected  = safe_float(_s('total_expected'))
+        total_received  = safe_float(_s('total_received'))
+        unpaid_count    = int(_s('unpaid_count')  or 0)
+        overdue_count   = int(_s('overdue_count') or 0)
+        cr              = safe_float(_s('collection_rate'))   # ← 關鍵：確保是 float
+
         col1, col2, col3, col4 = st.columns(4)
         with col1:
-            st.metric("應收總額", f"NT${_s('total_expected'):,.0f}", help="本月應繳租金總額")
+            st.metric("應收總額", f"NT${total_expected:,.0f}", help="本月應繳租金總額")
         with col2:
             st.metric(
                 "實收總額",
-                f"NT${_s('total_received'):,.0f}",
-                delta=f"{_s('collection_rate'):.1%}",
+                f"NT${total_received:,.0f}",
+                delta=f"{cr:.1%}",
                 help="已收到的租金金額與收款率"
             )
         with col3:
-            st.metric("待收", f"{_s('unpaid_count')} 筆", help="尚未繳款的租金記錄數")
+            st.metric("待收", f"{unpaid_count} 筆", help="尚未繳款的租金記錄數")
         with col4:
-            oc = _s('overdue_count')
             st.metric(
-                "逾期", f"{oc} 筆",
-                delta="-" if oc > 0 else "正常",
+                "逾期", f"{overdue_count} 筆",
+                delta="-" if overdue_count > 0 else "正常",
                 delta_color="inverse"
             )
 
-        cr = _s('collection_rate')
+        # ✅ [FIX v3.3] st.progress 只接受 float，min() 的兩個參數也須是 float
         st.progress(min(cr, 1.0))
         st.caption(f"收款進度：{cr:.1%}")
 
@@ -473,7 +501,6 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
         status_map = {'unpaid': '⏳ 未繳', 'paid': '✅ 已繳', 'overdue': '🚨 逾期'}
         df['status_display'] = df['status'].map(status_map).fillna(df['status'])
 
-        # payment_schedule 表有 tenant_name 欄位，直接使用
         display_cols = ['room_number', 'tenant_name', 'amount', 'due_date', 'status_display']
         if 'payment_method' in df.columns:
             display_cols.append('payment_method')
@@ -486,7 +513,7 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
         }
         st.dataframe(
             df[available_cols].rename(columns=rename_map),
-            width="stretch",                     # ✅ FIX 6
+            width="stretch",
             hide_index=True
         )
 
@@ -519,7 +546,7 @@ def render_monthly_summary_tab(payment_service: PaymentService, tenant_service: 
                     f"✅ 標記 ({len(selected_ids)})",
                     type="primary",
                     disabled=len(selected_ids) == 0,
-                    width="stretch",             # ✅ FIX 7
+                    width="stretch",
                     key="monthly_mark_paid"
                 ):
                     with st.spinner("處理中..."):
@@ -603,7 +630,7 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
         }
         st.dataframe(
             df[available_cols].rename(columns=rename_map),
-            width="stretch",                     # ✅ FIX 8
+            width="stretch",
             hide_index=True
         )
 
@@ -632,7 +659,7 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
                     f"✅ 標記 ({len(selected_ids)})",
                     type="primary",
                     disabled=len(selected_ids) == 0,
-                    width="stretch"              # ✅ FIX 9
+                    width="stretch"
                 ):
                     with st.spinner("處理中..."):
                         try:
@@ -682,7 +709,6 @@ def render_tenant_history_report(payment_service: PaymentService, tenant_service
             st.warning("沒有活躍房客")
             return
 
-        # ✅ 修正: tenant_name → name
         tenant_options = {
             t['room_number']: f"{t['room_number']} - {t.get('name', '未知')}"
             for t in tenants
@@ -705,7 +731,7 @@ def render_tenant_history_report(payment_service: PaymentService, tenant_service
             display_cols = [c for c in available_cols_list if c in df.columns]
             st.dataframe(
                 df[display_cols],
-                width="stretch",                 # ✅ FIX 10
+                width="stretch",
                 hide_index=True
             )
         else:
