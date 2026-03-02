@@ -154,7 +154,7 @@ def check_database_health() -> bool:
 
 def _try_restore_from_cookie() -> bool:
     """
-    F5 刷新後，嘗試從 Cookie 讀取 refresh_token 并還原 Session。
+    F5 刷新後，嘗試從 Cookie 讀取 refresh_token 带還原 Session。
     還原成功返回 True，否則 False。
     """
     try:
@@ -174,14 +174,12 @@ def _try_restore_from_cookie() -> bool:
             clear_auth_cookie()
             return False
 
-        # 還原 session_state
         session_manager.login(
             access_token  = new_session["access_token"],
             refresh_token = new_session["refresh_token"],
             user_data     = new_session["user"],
             expires_at    = new_session.get("expires_at"),
         )
-        # 更新 Cookie（換新 Token）
         from utils.cookie_manager import save_auth_cookie
         save_auth_cookie(new_session["access_token"], new_session["refresh_token"])
 
@@ -269,16 +267,13 @@ def check_page_permission(page_name: str) -> bool:
 def main() -> None:
     session_manager.init()
 
-    # 守門員：未登入 → 先嘗試 Cookie 還原
     if not session_manager.is_authenticated():
         if _try_restore_from_cookie():
-            # 還原成功，直接往下執行到 render_main_app()
-            pass
+            pass  # 還原成功，直接往下執行
         else:
             render_login_page()
             return
 
-    # Token 刷新檢查
     if not handle_session_refresh():
         st.warning("⏱️ 登入已過期，請重新登入")
         _clear_cookie()
@@ -286,9 +281,7 @@ def main() -> None:
         st.rerun()
         return
 
-    # 同步 Cookie（登入成功 或 Token 刷新後）
     _sync_cookie()
-
     render_main_app()
 
 
@@ -370,18 +363,16 @@ def render_user_card() -> None:
         else:
             st.caption("🏷️ 角色: 👤 用戶")
 
-        # 登入時長
         login_time = st.session_state.get("login_time")
         if login_time:
             try:
                 if isinstance(login_time, str):
                     login_time = datetime.fromisoformat(login_time)
-                secs  = int((datetime.now() - login_time).total_seconds())
+                secs = int((datetime.now() - login_time).total_seconds())
                 st.caption(f"⏱️ 已登入: {secs // 3600}h {(secs % 3600) // 60}m")
             except Exception:
                 pass
 
-        # Token 剩餘有效期
         expires_dt = _parse_expires_at(st.session_state.get("expires_at"))
         if expires_dt:
             try:
@@ -444,7 +435,9 @@ def render_system_status(db_healthy: bool) -> None:
             st.success("✅ 資料庫") if db_healthy else st.error("❌ 資料庫")
         with c2:
             env = APP_CONFIG["environment"]
-            st.info(f"{'\ud83d\ude80' if env == 'production' else '\ud83d\udd27'} {env.capitalize()}")
+            # ✅ 不在 f-string 內嵌激活表達式，避免 Python 3.13 surrogate 錯誤
+            env_icon = "🚀" if env == "production" else "🔧"
+            st.info(f"{env_icon} {env.capitalize()}")
         st.caption(f"Version: {APP_CONFIG['version']}")
         if get_env("LINE_CHANNEL_ACCESS_TOKEN"):
             st.success("✅ LINE Bot")
@@ -466,16 +459,16 @@ def render_main_content() -> None:
         return
 
     PAGE_MODULES = {
-        "📊 儀表板":      "dashboard",
-        "👥 房客管理":    "tenants",
-        "💰 租金管理":    "rent",
-        "📋 繳費追蹤":    "tracking",
-        "⚡ 電費管理":    "electricity",
-        "💸 支出記錄":    "expenses",
-        "📱 LINE 綁定":   "line_binding",
-        "📬 通知管理":    "notifications",
-        "⚙️ 系統設定":    "settings",
-        "👨‍💼 用戶管理": "user_management",
+        "📊 儀表板":       "dashboard",
+        "👥 房客管理":     "tenants",
+        "💰 租金管理":     "rent",
+        "📋 繳費追蹤":     "tracking",
+        "⚡ 電費管理":     "electricity",
+        "💸 支出記錄":     "expenses",
+        "📱 LINE 綁定":    "line_binding",
+        "📬 通知管理":     "notifications",
+        "⚙️ 系統設定":     "settings",
+        "👨‍💼 用戶管理":  "user_management",
     }
     page_module = PAGE_MODULES.get(menu)
     if not page_module:
