@@ -1,6 +1,7 @@
 """
 UI 元件庫 - 統一視覺風格
 ✅ [FIX v1.1] data_table: use_container_width → width="stretch" (移除棄用警告)
+✅ [FIX v1.2] data_table: index 從 1 開始（全局生效）
 """
 
 import streamlit as st
@@ -186,15 +187,18 @@ def room_status_card(room: str, tenant_name: Optional[str],
 def data_table(df, key: str = "table"):
     """
     美化的資料表格
+    ✅ [v1.2] index 自動從 1 開始，全局生效
 
     Args:
         df: pandas DataFrame
         key: unique key for the table
     """
+    display = df.copy()
+    display.index = range(1, len(display) + 1)   # ✅ 編號從 1 開始
     st.dataframe(
-        df,
-        width="stretch",                         # ✅ FIX: use_container_width=True → width="stretch"
-        height=min(400, len(df) * 35 + 38),
+        display,
+        width="stretch",
+        height=min(400, len(display) * 35 + 38),
         key=key
     )
 
