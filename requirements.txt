@@ -1,17 +1,20 @@
 # ====================================================
-# 幸福之家 Pro - 租赁管理系统
-# Requirements v15.0 (Nordic Edition)
-# Updated: 2026-02-08
+# 幸福之家 Pro - 租賃管理系統
+# Requirements v15.1 (Nordic Edition)
+# Updated: 2026-03-02
 # ====================================================
 
 # ============== Core Framework ==============
 streamlit>=1.30.0
 
+# ============== Cookie 持久化（F5 不登出） ==============
+streamlit-cookies-controller>=0.0.4
+
 # ============== Supabase & Authentication ==============
 supabase==2.3.5
-gotrue==2.4.2  # Supabase Auth 依赖
-pydantic[email]>=2.5.0  # ✅ 新增：支持 email 验证
-email-validator>=2.1.0  # ✅ 新增：必须的 email 验证库
+gotrue==2.4.2
+pydantic[email]>=2.5.0
+email-validator>=2.1.0
 
 # ============== Database ==============
 psycopg2-binary>=2.9.9
@@ -32,7 +35,7 @@ line-bot-sdk==3.11.0
 python-dotenv==1.0.0
 
 # ============== Optional: Error Monitoring ==============
-# sentry-sdk==2.23.0  # Error tracking for production
+# sentry-sdk==2.23.0
 
 # ============== Optional: Excel Export ==============
 openpyxl==3.1.2
@@ -41,6 +44,5 @@ openpyxl==3.1.2
 requests==2.31.0
 
 # ====================================================
-# Installation Instructions:
 # pip install -r requirements.txt
 # ====================================================
