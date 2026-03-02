@@ -1,8 +1,12 @@
 """
-電費管理 - v4.5
-✅ v4.4 所有功能保留
-✅ [FIX v4.5] render_period_tab: 建立期間時可一併設定催繳日期
-✅ [FIX v4.4] fallback data_table: width='stretch'（移除棄用警告）
+電費管理 - v4.6
+✅ v4.5 所有功能保留
+✅ [FIX v4.6] 步驟 2 三段式讀數邏輯：
+      Case A  本期已有 DB 資料  → 上期鎖定、本期可修改
+      Case B  上期有 DB 讀數    → 上期自動帶入並鎖定，只需填本期
+      Case C  全新（第一次）    → 上期、本期皆可編輯
+✅ [FIX v4.6] is_first_time 不再把「讀數=0」誤判為首次
+✅ [FIX v4.6] 視覺提示：顯示讀數來源（上期 ID / 已儲存 / 首次）
 """
 
 import streamlit as st
@@ -41,8 +45,8 @@ try:
     from config.constants import ROOMS
 except ImportError:
     class ROOMS:
-        ALL_ROOMS     = ["1A", "1B", "2A", "2B", "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"]
-        SHARING_ROOMS = ["2A", "2B", "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"]
+        ALL_ROOMS       = ["1A", "1B", "2A", "2B", "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"]
+        SHARING_ROOMS   = ["2A", "2B", "3A", "3B", "3C", "3D", "4A", "4B", "4C", "4D"]
         EXCLUSIVE_ROOMS = ["1A", "1B"]
 
 logger = logging.getLogger(__name__)
@@ -66,7 +70,7 @@ def calculate_electricity_charges(
     taipower_bills: List[Dict],
     room_readings: Dict[str, float],
 ) -> Optional[Dict]:
-    """計算電費 - v4.5（邏輯不變）"""
+    """計算電費 - v4.6（邏輯不變）"""
     try:
         floor_1f      = next((b for b in taipower_bills if b["floor_label"] == "1F"), None)
         floors_2f_4f  = [b for b in taipower_bills if b["floor_label"] != "1F"]
@@ -84,8 +88,8 @@ def calculate_electricity_charges(
         sharing_rooms_with_reading = [
             r for r in ROOMS.SHARING_ROOMS if room_readings.get(r, 0) > 0
         ]
-        sharing_count    = len(sharing_rooms_with_reading)
-        shared_per_room  = int(round(public_kwh / sharing_count)) if sharing_count > 0 else 0
+        sharing_count   = len(sharing_rooms_with_reading)
+        shared_per_room = int(round(public_kwh / sharing_count)) if sharing_count > 0 else 0
 
         results = []
 
@@ -120,8 +124,8 @@ def calculate_electricity_charges(
                 "應繳金額": round(total_room_kwh * merged_unit_price),
             })
 
-        total_charge    = sum(r["應繳金額"] for r in results)
-        total_taipower  = sum(b["amount"]  for b in taipower_bills)
+        total_charge   = sum(r["應繳金額"] for r in results)
+        total_taipower = sum(b["amount"]  for b in taipower_bills)
 
         # 樓層摘要
         floor_summaries = []
@@ -151,16 +155,16 @@ def calculate_electricity_charges(
 
         logger.info(f"✅ 電費計算完成: {len(results)} 間房間")
         return {
-            "total_charge":     total_charge,
-            "taipower_amount":  total_taipower,
-            "difference":       total_charge - total_taipower,
-            "details":          results,
-            "floor_summaries":  floor_summaries,
-            "merged_unit_price":merged_unit_price,
-            "total_public_kwh": public_kwh,
-            "shared_per_room":  shared_per_room,
-            "merged_kwh":       merged_kwh,
-            "merged_amount":    merged_amount,
+            "total_charge":      total_charge,
+            "taipower_amount":   total_taipower,
+            "difference":        total_charge - total_taipower,
+            "details":           results,
+            "floor_summaries":   floor_summaries,
+            "merged_unit_price": merged_unit_price,
+            "total_public_kwh":  public_kwh,
+            "shared_per_room":   shared_per_room,
+            "merged_kwh":        merged_kwh,
+            "merged_amount":     merged_amount,
         }
 
     except Exception as e:
@@ -175,9 +179,7 @@ def calculate_electricity_charges(
 def render_period_tab(elec_service: ElectricityService):
     section_header("計費期間管理", "📅")
 
-    # ── 建立新期間 ──────────────────────────────────────────
     col1, col2, col3 = st.columns(3)
-
     with col1:
         year = st.number_input(
             "年份", min_value=2020, max_value=2030,
@@ -194,7 +196,6 @@ def render_period_tab(elec_service: ElectricityService):
             index=date.today().month % 12, key="period_end",
         )
 
-    # ✅ [v4.5] 建立時可一併填入催繳日期（optional）
     col_date, col_btn = st.columns([3, 1])
     with col_date:
         remind_on_create = st.date_input(
@@ -224,8 +225,6 @@ def render_period_tab(elec_service: ElectricityService):
                     st.error(msg)
 
     st.divider()
-
-    # ── 現有期間列表 ────────────────────────────────────────
     section_header("現有期間", "📋", divider=False)
 
     periods = elec_service.get_all_periods()
@@ -238,7 +237,6 @@ def render_period_tab(elec_service: ElectricityService):
         for p in periods
     }
     selected = st.selectbox("選擇計費期間", list(period_options.keys()), key="selected_period")
-
     if not selected:
         return
 
@@ -247,12 +245,9 @@ def render_period_tab(elec_service: ElectricityService):
     period_info = elec_service.get_period_by_id(period_id)
 
     st.divider()
-
-    # ── 催繳日期設定（事後更新）──────────────────────────────
     section_header("催繳日期設定", "🔔", divider=False)
 
     current_remind_date = period_info.get("remind_start_date")
-
     if current_remind_date:
         st.info(f"✅ 目前催繳日期: {current_remind_date}")
     else:
@@ -283,8 +278,6 @@ def render_period_tab(elec_service: ElectricityService):
                 st.error(msg)
 
     st.divider()
-
-    # ── 刪除期間 ────────────────────────────────────────────
     col_del, col_info = st.columns([1, 3])
     with col_del:
         if st.button("🗑️ 刪除期間", type="secondary"):
@@ -351,23 +344,17 @@ def render_calculation_tab(
         if not bills:
             st.error("❌ 請至少輸入一個樓層的台電單")
         else:
-            if "taipower_bills" not in st.session_state:
-                st.session_state.taipower_bills = {}
-            st.session_state.taipower_bills[period_id] = bills
+            st.session_state.setdefault("taipower_bills", {})[period_id] = bills
             st.success(f"✅ 已儲存 {len(bills)} 個台電單")
 
-    # 摘要顯示
     saved_bills = st.session_state.get("taipower_bills", {}).get(period_id)
     if saved_bills:
-        bill_1f      = next((b for b in saved_bills if b["floor_label"] == "1F"), None)
-        bills_2f_4f  = [b for b in saved_bills if b["floor_label"] != "1F"]
-
+        bill_1f     = next((b for b in saved_bills if b["floor_label"] == "1F"), None)
+        bills_2f_4f = [b for b in saved_bills if b["floor_label"] != "1F"]
         st.divider()
         st.write("**已儲存摘要:**")
-
         if bill_1f:
             st.metric("1F (獨立)", f"${bill_1f['amount']:,}", f"{bill_1f['kwh']:.0f} 度")
-
         if bills_2f_4f:
             merged_amt = sum(b["amount"] for b in bills_2f_4f)
             merged_kwh = sum(b["kwh"]    for b in bills_2f_4f)
@@ -376,13 +363,24 @@ def render_calculation_tab(
                 with scols[i]:
                     st.metric(b["floor_label"], f"${b['amount']:,}", f"{b['kwh']:.0f} 度")
             with scols[-1]:
-                st.metric("**2-4F 合計**", f"${merged_amt:,}", f"{merged_kwh:.0f} 度")
+                st.metric("2-4F 合計", f"${merged_amt:,}", f"{merged_kwh:.0f} 度")
 
     st.divider()
 
     # ── 步驟 2: 房間讀數 ─────────────────────────────────────
     section_header("步驟 2: 輸入房間讀數", "🔢")
-    st.caption("💡 首次輸入時上期可編輯，之後自動帶入上次讀數並鎖定。")
+    st.caption(
+        "💡 規則："
+        "🟢 新期間 → 上期自動帶入上次讀數（鎖定），只需填本期  "
+        "🔵 本期已儲存 → 可修改本期讀數  "
+        "⚪ 首次輸入 → 上期、本期皆可手動輸入"
+    )
+
+    # ✅ [v4.6] 一次查出本期已存在 DB 的讀數，key=room_number
+    existing_readings_list = elec_service.get_all_readings(period_id)
+    existing_by_room: Dict[str, Dict] = {
+        r["room_number"]: r for r in existing_readings_list
+    }
 
     room_readings: Dict[str, float] = {}
     raw_readings:  Dict[str, Dict]  = {}
@@ -395,43 +393,101 @@ def render_calculation_tab(
             with col:
                 st.markdown(f"**{room}**")
 
-                last_reading  = elec_service.get_latest_meter_reading(room, period_id)
-                is_first_time = last_reading is None or last_reading == 0
+                # ── Case A: 本期 DB 已有資料（曾計算過） ────────
+                if room in existing_by_room:
+                    saved       = existing_by_room[room]
+                    previous    = float(saved["previous_reading"])
+                    saved_curr  = float(saved["current_reading"])
 
-                if is_first_time:
-                    previous = st.number_input(
-                        "上期 📊", min_value=0.0, value=0.0, step=1.0,
-                        key=f"prev_{room}", help="首次輸入，請輸入起始讀數", disabled=False,
-                    )
-                else:
-                    previous = float(last_reading)
+                    # 上期鎖定顯示
                     st.number_input(
-                        "上期 📊", min_value=0.0, value=previous, step=1.0,
-                        key=f"prev_{room}", help="自動帶入（不可修改）", disabled=True,
+                        "上期 📊",
+                        value=previous,
+                        step=1.0,
+                        format="%.2f",
+                        key=f"prev_{room}",
+                        disabled=True,
+                        help=f"本期已儲存資料，上期讀數鎖定",
                     )
+                    # 本期可修改
+                    current = st.number_input(
+                        "本期 ✏️",
+                        min_value=previous,
+                        value=saved_curr,
+                        step=1.0,
+                        format="%.2f",
+                        key=f"curr_{room}",
+                        help="本期已有儲存值，可直接修改後重新計算",
+                    )
+                    st.caption("🔵 已儲存，可修改本期")
 
-                current = st.number_input(
-                    "本期 📈", min_value=previous, value=previous, step=1.0,
-                    key=f"curr_{room}", help="本次抄表讀數",
-                )
+                else:
+                    # ── Case B / C: 查詢上期讀數 ─────────────────
+                    # ✅ [v4.6] 只以 None 判斷，不再把 0 誤判為首次
+                    last_reading = elec_service.get_latest_meter_reading(room, period_id)
+
+                    if last_reading is not None:
+                        # ── Case B: 有上期資料 → 上期鎖定，只填本期 ──
+                        previous = float(last_reading)
+                        st.number_input(
+                            "上期 📊",
+                            value=previous,
+                            step=1.0,
+                            format="%.2f",
+                            key=f"prev_{room}",
+                            disabled=True,
+                            help="自動帶入上期最後讀數（不可修改）",
+                        )
+                        current = st.number_input(
+                            "本期 📈",
+                            min_value=previous,
+                            value=previous,
+                            step=1.0,
+                            format="%.2f",
+                            key=f"curr_{room}",
+                            help="請輸入本次抄表讀數",
+                        )
+                        st.caption("🟢 上期已自動帶入")
+
+                    else:
+                        # ── Case C: 全新第一次，兩欄皆可輸入 ────────
+                        previous = st.number_input(
+                        "上期 📊",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            format="%.2f",
+                            key=f"prev_{room}",
+                            help="首次輸入，請填電表起始讀數",
+                        )
+                        current = st.number_input(
+                            "本期 📈",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            format="%.2f",
+                            key=f"curr_{room}",
+                            help="請輸入本次抄表讀數",
+                        )
+                        st.caption("⚪ 首次輸入")
+
+                # ── 使用度數 badge ───────────────────────────────
                 usage = current - previous
-
                 if usage > 0:
                     st.success(f"⚡ {usage:.1f} 度")
-                elif usage == 0 and current > 0:
+                elif current > 0:
                     st.info("📊 無變化")
                 else:
-                    st.caption("⚪ 等待輸入")
+                    st.caption("　等待輸入")
 
                 room_readings[room] = usage
                 raw_readings[room]  = {"previous": previous, "current": current}
 
         st.divider()
 
-    if st.button("💾 儲存讀數", type="primary"):
-        st.session_state.setdefault("room_readings", {})[period_id] = room_readings
-        st.session_state.setdefault("raw_readings",  {})[period_id] = raw_readings
-        st.success("✅ 已儲存讀數到記憶體（請繼續計算）")
+    # 儲存讀數到 session_state（供步驟 3 使用）
+    st.session_state.setdefault("room_readings", {})[period_id] = room_readings
+    st.session_state.setdefault("raw_readings",  {})[period_id] = raw_readings
 
     st.divider()
 
@@ -446,7 +502,7 @@ def render_calculation_tab(
         if not bills:
             st.error("❌ 請先輸入台電帳單"); return
         if not readings or all(v == 0 for v in readings.values()):
-            st.error("❌ 請先輸入房間讀數"); return
+            st.error("❌ 請先輸入房間讀數（本期讀數需大於上期）"); return
 
         result = calculate_electricity_charges(bills, readings)
         if not result:
@@ -489,17 +545,14 @@ def render_calculation_tab(
     if not (result and enriched_details):
         return
 
-    # 摘要 metrics
     st.markdown("### 📊 計算摘要")
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("2-4F 合計",   f"{result['merged_kwh']:.0f} 度")
-    c2.metric("總公用電",    f"{result['total_public_kwh']:.0f} 度")
-    c3.metric("每間分攤",    f"{result['shared_per_room']} 度")
-    c4.metric("2-4F 單價",   f"${result['merged_unit_price']:.2f}/度")
+    c1.metric("2-4F 合計",  f"{result['merged_kwh']:.0f} 度")
+    c2.metric("總公用電",   f"{result['total_public_kwh']:.0f} 度")
+    c3.metric("每間分攤",   f"{result['shared_per_room']} 度")
+    c4.metric("2-4F 單價",  f"${result['merged_unit_price']:.2f}/度")
 
     st.divider()
-
-    # 樓層摘要
     st.markdown("### 📊 各樓層摘要")
     for fs in result["floor_summaries"]:
         with st.expander(
@@ -511,7 +564,6 @@ def render_calculation_tab(
             col2.metric("房間用電", f"{fs['room_kwh']:.0f} 度")
 
     st.divider()
-
     st.markdown(f"""
 ### 💰 總計
 - **台電總金額**: ${result['taipower_amount']:,} 元
@@ -520,8 +572,6 @@ def render_calculation_tab(
     """)
 
     st.divider()
-
-    # 明細表
     st.write("**各房間明細**")
     details_df = pd.DataFrame(enriched_details)
     col_order  = [
@@ -537,8 +587,6 @@ def render_calculation_tab(
     data_table(details_df, key="calc_details")
 
     st.divider()
-
-    # ── 通知設定 ─────────────────────────────────────────────
     section_header("通知設定", "🔔", divider=False)
     st.markdown("### 📱 LINE 電費通知")
 
@@ -569,7 +617,6 @@ def render_calculation_tab(
                     else:
                         fail_count += 1
                         logger.error(f"發送失敗: {detail['房號']} - {msg}")
-
                 if success_count:
                     st.success(f"✅ 成功發送 {success_count} 則通知")
                 if fail_count:
@@ -578,20 +625,17 @@ def render_calculation_tab(
     elif notify_mode == "自動發送":
         period_info = elec_service.get_period_by_id(period_id)
         remind_date = period_info.get("remind_start_date")
-
         if not remind_date:
             st.error("❌ 請先在「計費期間」Tab 設定催繳日期")
         else:
-            remind_dt  = datetime.strptime(remind_date, "%Y-%m-%d")
-            days_left  = (remind_dt - datetime.now()).days
+            remind_dt = datetime.strptime(remind_date, "%Y-%m-%d")
+            days_left = (remind_dt - datetime.now()).days
             if days_left <= 0:
                 st.success(f"✅ 催繳日期已到（{remind_date}），系統將自動發送通知")
             else:
                 st.info(f"⏳ 催繳日期: {remind_date}（還有 {days_left} 天）")
 
     st.divider()
-
-    # 下載
     csv = details_df.to_csv(index=False, encoding="utf-8-sig")
     st.download_button("📥 下載 CSV 備份", csv, f"electricity_{period_id}.csv", "text/csv")
     st.info("💡 計費記錄已自動儲存，可前往「📜 繳費記錄」Tab 查看")
