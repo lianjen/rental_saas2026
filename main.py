@@ -14,7 +14,7 @@ Nordic Edition v15.0 (Service Architecture + Auth Gatekeeper + Session Refresh)
 import os
 import logging
 from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -364,12 +364,35 @@ def render_sidebar(db_healthy: bool) -> None:
         render_system_status(db_healthy)
 
 
+def _parse_expires_at(raw) -> Optional[datetime]:
+    """
+    將 Supabase 回傳的各種 expires_at 格式統一解析為 UTC-aware datetime。
+    支援：Unix int/float、ISO 字串（含或不含時區）、datetime 物件。
+    """
+    try:
+        if isinstance(raw, (int, float)):
+            # Supabase 常回傳 Unix timestamp（秒）
+            return datetime.fromtimestamp(raw, tz=timezone.utc)
+        if isinstance(raw, str):
+            dt = datetime.fromisoformat(raw.replace('Z', '+00:00'))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            return dt
+        if isinstance(raw, datetime):
+            if raw.tzinfo is None:
+                return raw.replace(tzinfo=timezone.utc)
+            return raw
+    except Exception as e:
+        logger.debug(f"_parse_expires_at 解析失敗: {e}")
+    return None
+
+
 def render_user_card() -> None:
     """渲染用戶資訊卡片"""
     with st.container(border=True):
-        user_name = session_manager.get_user_name()
+        user_name  = session_manager.get_user_name()
         user_email = session_manager.get_user_email()
-        user_role = session_manager.get_user_role()
+        user_role  = session_manager.get_user_role()
         
         st.markdown(f"**👤 {user_name}**")
         st.caption(f"📧 {user_email}")
@@ -379,21 +402,41 @@ def render_user_card() -> None:
             st.caption("🏷️ 角色: 👨‍💼 管理員")
         else:
             st.caption("🏷️ 角色: 👤 用戶")
-        
-        # Session 有效期
-        expires_at = st.session_state.get("expires_at")
-        if expires_at:
+
+        # --------------------------------------------------
+        # ✅ 登入時長（從 LOGIN_TIME 算起，遞增顯示）
+        # --------------------------------------------------
+        login_time = st.session_state.get("login_time")
+        if login_time:
             try:
-                if isinstance(expires_at, str):
-                    expires_at = datetime.fromisoformat(expires_at.replace('Z', '+00:00'))
-                
-                remaining = expires_at - datetime.now()
-                if remaining.total_seconds() > 0:
-                    hours = int(remaining.total_seconds() // 3600)
-                    minutes = int((remaining.total_seconds() % 3600) // 60)
-                    st.caption(f"⏱️ Session: {hours}h {minutes}m")
-            except:
-                pass
+                if isinstance(login_time, str):
+                    login_time = datetime.fromisoformat(login_time)
+                elapsed     = datetime.now() - login_time
+                total_secs  = int(elapsed.total_seconds())
+                hours       = total_secs // 3600
+                minutes     = (total_secs % 3600) // 60
+                st.caption(f"⏱️ 已登入: {hours}h {minutes}m")
+            except Exception as e:
+                logger.debug(f"登入時長計算失敗: {e}")
+
+        # --------------------------------------------------
+        # ✅ Token 剩餘有效期（正確處理時區，遞減顯示）
+        # --------------------------------------------------
+        raw_expires = st.session_state.get("expires_at")
+        if raw_expires:
+            expires_dt = _parse_expires_at(raw_expires)
+            if expires_dt:
+                try:
+                    remaining = expires_dt - datetime.now(tz=timezone.utc)
+                    rem_secs  = remaining.total_seconds()
+                    if rem_secs > 0:
+                        rem_h = int(rem_secs // 3600)
+                        rem_m = int((rem_secs % 3600) // 60)
+                        st.caption(f"🔑 Token: {rem_h}h {rem_m}m")
+                    else:
+                        st.caption("🔑 Token: 即將刷新")
+                except Exception as e:
+                    logger.debug(f"Token 剩餘時間計算失敗: {e}")
         
         st.divider()
         
