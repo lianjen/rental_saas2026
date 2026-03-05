@@ -1,5 +1,5 @@
 """
-房客管理 - v5.3 (use_container_width 棄用修正)
+房客管理 - v5.4
 ✅ 整合認證系統
 ✅ 登入保護
 ✅ 整合 Pydantic 驗證層
@@ -11,7 +11,9 @@
 ✅ 適配 Supabase 欄位
 ✅ [FIX] 統一欄位名稱: rent/deposit/lease_start/lease_end
 ✅ [FIX] st.number_input 型別一致（min_value 改為 0.0）
-✅ [FIX v5.3] use_container_width → width="stretch" (移除棄用警告，共 6 處)
+✅ [FIX v5.3] use_container_width → width="stretch"
+✅ [FIX v5.4] \\n 跳脫修正 (format_validation_error 及 error 訊息)
+✅ [FIX v5.4] 移除 rent_due_day 不存在欄位存取
 """
 
 import streamlit as st
@@ -54,7 +56,7 @@ except ImportError:
             st.caption(desc)
 
     def data_table(df, key="table"):
-        st.dataframe(df, width="stretch", key=key, hide_index=True)   # ✅ FIX 1
+        st.dataframe(df, width="stretch", key=key, hide_index=True)
 
 logger = logging.getLogger(__name__)
 
@@ -66,10 +68,10 @@ COLUMN_DISPLAY_MAP = {
     'room_number': '房號',
     'name': '姓名',
     'phone': '電話',
-    'rent': '月租',            # ✅ DB 實際欄位名
-    'deposit': '押金',         # ✅ DB 實際欄位名
-    'lease_start': '入住日期', # ✅ DB 實際欄位名
-    'lease_end': '退租日期',   # ✅ DB 實際欄位名
+    'rent': '月租',
+    'deposit': '押金',
+    'lease_start': '入住日期',
+    'lease_end': '退租日期',
     'status': '狀態',
     'email': 'Email',
     'id_number': '身分證字號',
@@ -79,64 +81,42 @@ COLUMN_DISPLAY_MAP = {
 
 # ============== 認證檢查 ==============
 def check_authentication() -> bool:
-    """
-    檢查用戶是否已登入
-
-    Returns:
-        bool: True=已登入, False=未登入
-    """
     if not HAS_SESSION_MANAGER:
         return st.secrets.get("dev_mode", False)
     return session_manager.is_authenticated()
 
 
 def render_login_required():
-    """渲染登入提示頁面"""
     st.warning("🔒 此頁面需要登入才能使用")
     st.info("👉 請先前往「登入」頁面完成登入")
     col1, col2, col3 = st.columns([1, 1, 1])
     with col2:
-        if st.button(
-            "🔑 前往登入",
-            width="stretch",                     # ✅ FIX 2
-            type="primary"
-        ):
+        if st.button("🔑 前往登入", width="stretch", type="primary"):
             st.switch_page("pages/login.py")
 
 
 # ============== 輔助函數 ==============
 def format_validation_error(error: ValidationError) -> str:
-    """
-    格式化 Pydantic 驗證錯誤訊息
-
-    Args:
-        error: ValidationError 物件
-
-    Returns:
-        格式化的錯誤訊息
-    """
+    """格式化 Pydantic 驗證錯誤訊息"""
+    field_names = {
+        'name': '姓名',
+        'room_number': '房號',
+        'phone': '電話',
+        'email': 'Email',
+        'id_number': '身分證字號',
+        'rent': '月租',
+        'deposit': '押金',
+        'lease_start': '入住日期',
+        'lease_end': '退租日期',
+        'status': '狀態',
+        'notes': '備註',
+    }
     errors = []
     for err in error.errors():
         field = err['loc'][0] if err['loc'] else 'unknown'
-        message = err['msg']
-
-        # 翻譯欄位名稱（對應 DB 實際欄位）
-        field_names = {
-            'name': '姓名',
-            'room_number': '房號',
-            'phone': '電話',
-            'email': 'Email',
-            'id_number': '身分證字號',
-            'rent': '月租',            # ✅ 修正
-            'deposit': '押金',         # ✅ 修正
-            'lease_start': '入住日期', # ✅ 修正
-            'lease_end': '退租日期',   # ✅ 修正
-            'status': '狀態',
-            'notes': '備註',
-        }
-        field_cn = field_names.get(field, field)
-        errors.append(f"{field_cn}: {message}")
-
+        field_cn = field_names.get(str(field), str(field))
+        errors.append(f"{field_cn}: {err['msg']}")
+    # ✅ [FIX v5.4] 使用真正的 \n 跳行符號，不是\\n
     return "\n".join(errors)
 
 
@@ -147,19 +127,7 @@ def check_room_conflict(
     end: date,
     exclude_tenant_id: Optional[str] = None
 ) -> Tuple[bool, str]:
-    """
-    檢查房號是否與現有租約衝突
-
-    Args:
-        tenant_service: 房客服務實例
-        room: 房號
-        start: 租約開始日
-        end: 租約結束日
-        exclude_tenant_id: 排除的房客 ID (編輯時使用)
-
-    Returns:
-        (是否衝突, 訊息)
-    """
+    """檢查房號是否與現有租約衝突"""
     try:
         if exclude_tenant_id:
             existing_tenant = tenant_service.get_tenant_by_room(room)
@@ -186,56 +154,33 @@ def _safe_float(value, default: float = 0.0) -> float:
         return default
 
 
-# ============== Tab 1: 新增房客（整合 Pydantic）==============
+def _safe_date(value) -> Optional[date]:
+    """安全轉換 date，返回 None 如果無效"""
+    if value is None or str(value) in ('None', 'NaT', 'nan', ''):
+        return None
+    try:
+        return pd.to_datetime(value).date()
+    except Exception:
+        return None
+
+
+# ============== Tab 1: 新增房客 ==============
 def render_add_tab(tenant_service: TenantService):
-    """新增房客 Tab（整合 Pydantic 驗證）"""
     section_header("新增房客", "➕")
 
     with st.form("add_tenant_form"):
         col1, col2 = st.columns(2)
 
         with col1:
-            room = st.selectbox(
-                "房號 *",
-                ROOMS.ALL_ROOMS,
-                key="add_room"
-            )
-            name = st.text_input(
-                "姓名 *",
-                placeholder="例如: 王小明",
-                key="add_name"
-            )
-            phone = st.text_input(
-                "電話",
-                placeholder="例如: 0912-345-678",
-                key="add_phone"
-            )
-            email = st.text_input(
-                "Email",
-                placeholder="例如: tenant@example.com",
-                key="add_email"
-            )
+            room = st.selectbox("房號 *", ROOMS.ALL_ROOMS, key="add_room")
+            name = st.text_input("姓名 *", placeholder="例如: 王小明", key="add_name")
+            phone = st.text_input("電話", placeholder="例如: 0912-345-678", key="add_phone")
+            email = st.text_input("Email", placeholder="例如: tenant@example.com", key="add_email")
 
         with col2:
-            rent_input = st.number_input(
-                "月租 *",
-                min_value=0.0,          # ✅ float
-                value=6000.0,
-                step=500.0,
-                key="add_rent"
-            )
-            deposit_input = st.number_input(
-                "押金 *",
-                min_value=0.0,          # ✅ float
-                value=12000.0,
-                step=1000.0,
-                key="add_deposit"
-            )
-            lease_start_input = st.date_input(
-                "入住日期 *",
-                value=date.today(),
-                key="add_start"
-            )
+            rent_input = st.number_input("月租 *", min_value=0.0, value=6000.0, step=500.0, key="add_rent")
+            deposit_input = st.number_input("押金 *", min_value=0.0, value=12000.0, step=1000.0, key="add_deposit")
+            lease_start_input = st.date_input("入住日期 *", value=date.today(), key="add_start")
             lease_end_input = st.date_input(
                 "退租日期",
                 value=date.today().replace(year=date.today().year + 1),
@@ -243,41 +188,23 @@ def render_add_tab(tenant_service: TenantService):
             )
 
         st.divider()
-
         col3, col4 = st.columns(2)
         with col3:
-            # UI 保留繳租日欄位，但不寫入 DB（DB 已移除此欄）
             st.number_input(
                 "每月繳租日（顯示用）",
-                min_value=1,
-                max_value=31,
-                value=5,
+                min_value=1, max_value=31, value=5,
                 help="每月的第幾天繳租金（目前僅供顯示）",
                 key="add_due_day"
             )
-
         with col4:
-            id_number = st.text_input(
-                "身分證字號",
-                placeholder="例如: A123456789",
-                key="add_id_number"
-            )
+            id_number = st.text_input("身分證字號", placeholder="例如: A123456789", key="add_id_number")
 
-        notes = st.text_area(
-            "備註",
-            placeholder="例如: 優良房客、特殊需求等",
-            key="add_notes"
-        )
+        notes = st.text_area("備註", placeholder="例如: 優良房客、特殊需求等", key="add_notes")
 
-        submitted = st.form_submit_button(
-            "✅ 新增房客",
-            type="primary",
-            width="stretch"                      # ✅ FIX 3
-        )
+        submitted = st.form_submit_button("✅ 新增房客", type="primary", width="stretch")
 
         if submitted:
             try:
-                # ==================== Pydantic 驗證 ====================
                 tenant_data = TenantCreate(
                     name=name,
                     room_number=room,
@@ -291,20 +218,15 @@ def render_add_tab(tenant_service: TenantService):
                     notes=notes if notes else None
                 )
 
-                # ==================== 額外業務驗證 ====================
                 conflict, conflict_msg = check_room_conflict(
-                    tenant_service,
-                    room,
-                    lease_start_input,
-                    lease_end_input or date(2099, 12, 31)
+                    tenant_service, room,
+                    lease_start_input, lease_end_input or date(2099, 12, 31)
                 )
                 if conflict:
                     st.error(f"❌ {conflict_msg}")
                     return
 
-                # ==================== 呼叫 Service ====================
                 success, message = tenant_service.add_tenant(tenant_data=tenant_data)
-
                 if success:
                     st.success(f"✅ {message}")
                     st.balloons()
@@ -313,8 +235,8 @@ def render_add_tab(tenant_service: TenantService):
                     st.error(f"❌ {message}")
 
             except ValidationError as e:
-                error_msg = format_validation_error(e)
-                st.error(f"❌ 資料驗證失敗:\n{error_msg}")
+                # ✅ [FIX v5.4] 正確 \n 跳行
+                st.error(f"❌ 資料驗證失敗:\n{format_validation_error(e)}")
             except Exception as e:
                 st.error(f"❌ 新增失敗: {str(e)}")
                 logger.error(f"新增房客失敗: {str(e)}", exc_info=True)
@@ -322,48 +244,27 @@ def render_add_tab(tenant_service: TenantService):
 
 # ============== Tab 2: 房客列表 ==============
 def render_list_tab(tenant_service: TenantService):
-    """房客列表 Tab"""
     section_header("所有房客", "👥")
 
     try:
         tenants = tenant_service.get_all_tenants()
 
         if not tenants:
-            empty_state(
-                "目前沒有房客資料",
-                "👥",
-                "點擊「新增房客」開始管理"
-            )
+            empty_state("目前沒有房客資料", "👥", "點擊「新增房客」開始管理")
             return
 
         df = pd.DataFrame(tenants)
 
-        # 篩選控制
         col1, col2, col3 = st.columns(3)
-
         with col1:
-            filter_room = st.multiselect(
-                "篩選房號",
-                ROOMS.ALL_ROOMS,
-                key="filter_room"
-            )
-
+            filter_room = st.multiselect("篩選房號", ROOMS.ALL_ROOMS, key="filter_room")
         with col2:
             filter_status = st.multiselect(
-                "篩選狀態",
-                ["active", "inactive"],
-                default=["active"],
-                key="filter_status"
+                "篩選狀態", ["active", "inactive"], default=["active"], key="filter_status"
             )
-
         with col3:
-            search_name = st.text_input(
-                "搜尋姓名",
-                placeholder="輸入姓名關鍵字",
-                key="search_name"
-            )
+            search_name = st.text_input("搜尋姓名", placeholder="輸入姓名關鍵字", key="search_name")
 
-        # 應用篩選
         filtered_df = df.copy()
         if filter_room:
             filtered_df = filtered_df[filtered_df['room_number'].isin(filter_room)]
@@ -377,35 +278,23 @@ def render_list_tab(tenant_service: TenantService):
         st.write(f"**共 {len(filtered_df)} 筆資料**")
         st.divider()
 
-        # 顯示資料表
         if not filtered_df.empty:
-            # ✅ 使用 DB 實際欄位名稱
-            display_cols = [
-                'room_number', 'name', 'phone', 'rent',
-                'lease_start', 'lease_end', 'status'
-            ]
-            # ✅ 只取 DataFrame 中實際存在的欄位
+            display_cols = ['room_number', 'name', 'phone', 'rent', 'lease_start', 'lease_end', 'status']
             available_cols = [c for c in display_cols if c in filtered_df.columns]
             display_df = filtered_df[available_cols].copy()
-
-            # ✅ 用 dict mapping rename，長度永遠對齊
             display_df.columns = [COLUMN_DISPLAY_MAP.get(c, c) for c in available_cols]
 
-            # 格式化日期
             for date_col in ['入住日期', '退租日期']:
                 if date_col in display_df.columns:
                     display_df[date_col] = pd.to_datetime(
                         display_df[date_col], errors='coerce'
                     ).dt.strftime('%Y-%m-%d')
 
-            # 格式化狀態
             if '狀態' in display_df.columns:
                 display_df['狀態'] = display_df['狀態'].replace({
-                    'active': '✅ 活躍',
-                    'inactive': '❌ 已退租'
+                    'active': '✅ 活蹍', 'inactive': '❌ 已退租'
                 })
 
-            # 格式化月租
             if '月租' in display_df.columns:
                 display_df['月租'] = display_df['月租'].apply(
                     lambda x: f"NT$ {float(x):,.0f}" if pd.notna(x) else '-'
@@ -413,16 +302,15 @@ def render_list_tab(tenant_service: TenantService):
 
             data_table(display_df, key="tenant_list")
         else:
-            st.info("📭 沒有符合條件的資料")
+            st.info("💭 沒有符合條件的資料")
 
     except Exception as e:
         st.error(f"❌ 載入房客列表失敗: {str(e)}")
         logger.error(f"載入房客列表失敗: {str(e)}", exc_info=True)
 
 
-# ============== Tab 3: 編輯房客（整合 Pydantic）==============
+# ============== Tab 3: 編輯房客 ==============
 def render_edit_tab(tenant_service: TenantService):
-    """編輯房客 Tab（整合 Pydantic 驗證）"""
     section_header("編輯房客", "✏️")
 
     try:
@@ -434,18 +322,12 @@ def render_edit_tab(tenant_service: TenantService):
 
         df = pd.DataFrame(tenants)
 
-        # 選擇房客
         tenant_options = {
             f"{row['room_number']} - {row['name']} ({row['status']})": row['id']
             for _, row in df.iterrows()
         }
 
-        selected = st.selectbox(
-            "選擇要編輯的房客",
-            list(tenant_options.keys()),
-            key="edit_select"
-        )
-
+        selected = st.selectbox("選擇要編輯的房客", list(tenant_options.keys()), key="edit_select")
         if not selected:
             return
 
@@ -459,71 +341,47 @@ def render_edit_tab(tenant_service: TenantService):
 
             with col1:
                 room = st.selectbox(
-                    "房號 *",
-                    ROOMS.ALL_ROOMS,
-                    index=ROOMS.ALL_ROOMS.index(tenant_data['room_number']) if tenant_data['room_number'] in ROOMS.ALL_ROOMS else 0,
+                    "房號 *", ROOMS.ALL_ROOMS,
+                    index=ROOMS.ALL_ROOMS.index(tenant_data['room_number'])
+                    if tenant_data['room_number'] in ROOMS.ALL_ROOMS else 0,
                     key=f"edit_room_{tenant_id}"
                 )
-                name = st.text_input(
-                    "姓名 *",
-                    value=tenant_data['name'],
-                    key=f"edit_name_{tenant_id}"
-                )
-                phone = st.text_input(
-                    "電話",
-                    value=tenant_data.get('phone') or "",
-                    key=f"edit_phone_{tenant_id}"
-                )
-                email = st.text_input(
-                    "Email",
-                    value=tenant_data.get('email') or "",
-                    key=f"edit_email_{tenant_id}"
-                )
+                name = st.text_input("姓名 *", value=tenant_data['name'], key=f"edit_name_{tenant_id}")
+                phone = st.text_input("電話", value=tenant_data.get('phone') or "", key=f"edit_phone_{tenant_id}")
+                email = st.text_input("Email", value=tenant_data.get('email') or "", key=f"edit_email_{tenant_id}")
 
             with col2:
-                # ✅ 改用 DB 實際欄位 'rent' + 統一 float 型別
                 rent_input = st.number_input(
-                    "月租 *",
-                    min_value=0.0,
+                    "月租 *", min_value=0.0,
                     value=_safe_float(tenant_data.get('rent'), 6000.0),
-                    step=500.0,
-                    key=f"edit_rent_{tenant_id}"
+                    step=500.0, key=f"edit_rent_{tenant_id}"
                 )
-                # ✅ 改用 DB 實際欄位 'deposit' + 統一 float 型別
                 deposit_input = st.number_input(
-                    "押金 *",
-                    min_value=0.0,
+                    "押金 *", min_value=0.0,
                     value=_safe_float(tenant_data.get('deposit'), 12000.0),
-                    step=1000.0,
-                    key=f"edit_deposit_{tenant_id}"
+                    step=1000.0, key=f"edit_deposit_{tenant_id}"
                 )
-                # ✅ 改用 DB 實際欄位 'lease_start'
+                # ✅ [FIX v5.4] 使用 _safe_date 輔助函數
                 lease_start_input = st.date_input(
                     "入住日期 *",
-                    value=pd.to_datetime(tenant_data['lease_start']).date() if tenant_data.get('lease_start') else date.today(),
+                    value=_safe_date(tenant_data.get('lease_start')) or date.today(),
                     key=f"edit_start_{tenant_id}"
                 )
-                # ✅ 改用 DB 實際欄位 'lease_end'
-                lease_end_value = tenant_data.get('lease_end')
                 lease_end_input = st.date_input(
                     "退租日期",
-                    value=pd.to_datetime(lease_end_value).date() if lease_end_value and str(lease_end_value) not in ('None', 'NaT', '') else None,
+                    value=_safe_date(tenant_data.get('lease_end')),
                     key=f"edit_end_{tenant_id}"
                 )
 
             st.divider()
-
             col3, col4 = st.columns(2)
             with col3:
-                # UI 保留繳租日，不寫入 DB
+                # ✅ [FIX v5.4] rent_due_day 已從 DB 移除，固定預設値
                 st.number_input(
                     "每月繳租日（顯示用）",
-                    min_value=1,
-                    max_value=31,
-                    value=int(tenant_data.get('rent_due_day') or 5),
+                    min_value=1, max_value=31, value=5,
                     key=f"edit_due_day_{tenant_id}"
                 )
-
             with col4:
                 id_number = st.text_input(
                     "身分證字號",
@@ -531,38 +389,23 @@ def render_edit_tab(tenant_service: TenantService):
                     key=f"edit_id_number_{tenant_id}"
                 )
                 status = st.selectbox(
-                    "狀態",
-                    ["active", "inactive"],
+                    "狀態", ["active", "inactive"],
                     index=0 if tenant_data.get('status') == 'active' else 1,
-                    format_func=lambda x: "✅ 活躍" if x == "active" else "❌ 已退租",
+                    format_func=lambda x: "✅ 活蹍" if x == "active" else "❌ 已退租",
                     key=f"edit_status_{tenant_id}"
                 )
 
-            notes = st.text_area(
-                "備註",
-                value=tenant_data.get('notes') or "",
-                key=f"edit_notes_{tenant_id}"
-            )
-
+            notes = st.text_area("備註", value=tenant_data.get('notes') or "", key=f"edit_notes_{tenant_id}")
             st.divider()
 
             col_update, col_delete = st.columns([3, 1])
             with col_update:
-                update_btn = st.form_submit_button(
-                    "💾 儲存變更",
-                    type="primary",
-                    width="stretch"              # ✅ FIX 4
-                )
+                update_btn = st.form_submit_button("💾 儲存變更", type="primary", width="stretch")
             with col_delete:
-                delete_btn = st.form_submit_button(
-                    "🗑️ 刪除",
-                    type="secondary",
-                    width="stretch"              # ✅ FIX 5
-                )
+                delete_btn = st.form_submit_button("🗑️ 刪除", type="secondary", width="stretch")
 
             if update_btn:
                 try:
-                    # ==================== Pydantic 驗證 ====================
                     update_data = TenantUpdate(
                         name=name,
                         room_number=room,
@@ -577,10 +420,8 @@ def render_edit_tab(tenant_service: TenantService):
                         notes=notes if notes else None
                     )
 
-                    # ==================== 額外業務驗證 ====================
                     conflict, conflict_msg = check_room_conflict(
-                        tenant_service,
-                        room,
+                        tenant_service, room,
                         lease_start_input,
                         lease_end_input or date(2099, 12, 31),
                         tenant_id
@@ -589,7 +430,6 @@ def render_edit_tab(tenant_service: TenantService):
                         st.error(f"❌ {conflict_msg}")
                         return
 
-                    # ==================== 呼叫 Service ====================
                     success, message = tenant_service.update_tenant(
                         tenant_id=tenant_id,
                         tenant_data=update_data
@@ -602,8 +442,8 @@ def render_edit_tab(tenant_service: TenantService):
                         st.error(f"❌ {message}")
 
                 except ValidationError as e:
-                    error_msg = format_validation_error(e)
-                    st.error(f"❌ 資料驗證失敗:\n{error_msg}")
+                    # ✅ [FIX v5.4] 正確 \n 跳行
+                    st.error(f"❌ 資料驗證失敗:\n{format_validation_error(e)}")
                 except Exception as e:
                     st.error(f"❌ 更新失敗: {str(e)}")
                     logger.error(f"更新房客失敗: {str(e)}", exc_info=True)
@@ -635,79 +475,49 @@ def render_edit_tab(tenant_service: TenantService):
 
 # ============== Tab 4: 統計資訊 ==============
 def render_stats_tab(tenant_service: TenantService):
-    """統計資訊 Tab"""
     section_header("統計資訊", "📊")
 
     try:
         stats = tenant_service.get_tenant_statistics()
 
         col1, col2, col3, col4 = st.columns(4)
-
         with col1:
-            st.metric(
-                "總房客數",
-                stats['total_tenants'],
-                f"{stats['occupancy_rate']}% 出租率"
-            )
-
+            st.metric("總房客數", stats['total_tenants'], f"{stats['occupancy_rate']}% 出租率")
         with col2:
-            st.metric(
-                "已出租房間",
-                stats['occupied_rooms'],
-                f"共 {stats['total_rooms']} 間"
-            )
-
+            st.metric("已出租房間", stats['occupied_rooms'], f"共 {stats['total_rooms']} 間")
         with col3:
-            st.metric(
-                "月租總額",
-                f"NT$ {stats['total_rent']:,.0f}",
-                f"平均 NT$ {stats['avg_rent']:,.0f}"
-            )
-
+            st.metric("月租總額", f"NT$ {stats['total_rent']:,.0f}", f"平均 NT$ {stats['avg_rent']:,.0f}")
         with col4:
-            st.metric(
-                "押金總額",
-                f"NT$ {stats['total_deposit']:,.0f}"
-            )
+            st.metric("押金總額", f"NT$ {stats['total_deposit']:,.0f}")
 
         st.divider()
-
-        # 空房列表
         section_header("空房列表", "🏠", divider=False)
 
         vacant_rooms = tenant_service.get_available_rooms()
-
         if vacant_rooms:
             st.success(f"✅ 目前有 {len(vacant_rooms)} 間空房")
             cols = st.columns(min(6, len(vacant_rooms)))
             for idx, room in enumerate(vacant_rooms):
                 with cols[idx % len(cols)]:
-                    st.button(room, key=f"vacant_{room}", width="stretch")  # ✅ FIX 6
+                    st.button(room, key=f"vacant_{room}", width="stretch")
         else:
-            st.info("📭 目前沒有空房")
+            st.info("💭 目前沒有空房")
 
         st.divider()
-
-        # 即將到期租約
         section_header("即將到期租約（45天內）", "⏰", divider=False)
 
         expiring = tenant_service.get_expiring_leases(days=45)
-
         if expiring:
             st.warning(f"⚠️ 有 {len(expiring)} 筆租約即將到期")
             expiring_df = pd.DataFrame(expiring)
-
-            # ✅ 使用 DB 實際欄位 'lease_end'
             exp_display_cols = ['room_number', 'name', 'phone', 'lease_end', 'days_remaining']
             available_exp_cols = [c for c in exp_display_cols if c in expiring_df.columns]
             display_df = expiring_df[available_exp_cols].copy()
             display_df.columns = [COLUMN_DISPLAY_MAP.get(c, c) for c in available_exp_cols]
-
             if '退租日期' in display_df.columns:
                 display_df['退租日期'] = pd.to_datetime(
                     display_df['退租日期'], errors='coerce'
                 ).dt.strftime('%Y-%m-%d')
-
             data_table(display_df, key="expiring_leases")
         else:
             st.success("✅ 近期沒有租約到期")
@@ -717,7 +527,7 @@ def render_stats_tab(tenant_service: TenantService):
         logger.error(f"載入統計資訊失敗: {str(e)}", exc_info=True)
 
 
-# ============== 主函數（整合認證）==============
+# ============== 主函數 ==============
 def render():
     """主渲染函數（供 main.py 動態載入使用）"""
     if not check_authentication():
@@ -754,7 +564,6 @@ def render():
         render_stats_tab(tenant_service)
 
 
-# ✅ Streamlit 頁面入口
 def show():
     """Streamlit 頁面入口"""
     render()
