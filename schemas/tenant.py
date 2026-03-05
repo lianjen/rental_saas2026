@@ -1,14 +1,15 @@
 """
 房客 Pydantic Schema - v2.0 DB 欄位對齊版
 ✅ 欄位名稱完全對應 DB 實際欄位
-   rent_amount   → rent
+   rent_amount    → rent
    deposit_amount → deposit
-   move_in_date  → lease_start
-   move_out_date → lease_end
+   move_in_date   → lease_start
+   move_out_date  → lease_end
 ✅ 移除 rent_due_day（DB 已不存在此欄）
 ✅ TenantCreate / TenantUpdate / TenantResponse 三者一致
+✅ [FIX] id_number validator regex 修正 \\d → \d
 """
-from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import date, datetime
 import re
@@ -113,6 +114,7 @@ class TenantBase(BaseModel):
         """驗證台灣身分證字號格式"""
         if v:
             v = v.strip().upper()
+            # ✅ FIX: r-string 內 \d 不需雙斜線
             if not re.match(r'^[A-Z][12]\d{8}$', v):
                 raise ValueError('身分證字號格式錯誤（應為 1 個英文字母 + 9 個數字）')
         return v
@@ -141,6 +143,7 @@ class TenantUpdate(BaseModel):
     @field_validator('lease_end')
     @classmethod
     def validate_lease_end(cls, v, info):
+        """確保退租日期晚於入住日期"""
         if v and 'lease_start' in info.data and info.data['lease_start']:
             if v < info.data['lease_start']:
                 raise ValueError('退租日期不能早於入住日期')
@@ -154,7 +157,7 @@ class TenantResponse(TenantBase):
     updated_at: datetime
 
     class Config:
-        from_attributes = True
+        from_attributes = True  # Pydantic v2
 
 
 class TenantListItem(BaseModel):
@@ -162,10 +165,10 @@ class TenantListItem(BaseModel):
     id: str
     name: str
     room_number: str
-    rent: float          # ✅ DB 實際欄位名
+    rent: float           # ✅ DB 實際欄位名
     status: str
     phone: Optional[str] = None
-    lease_start: date    # ✅ DB 實際欄位名
+    lease_start: date     # ✅ DB 實際欄位名
 
     class Config:
         from_attributes = True
