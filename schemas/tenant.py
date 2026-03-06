@@ -1,10 +1,10 @@
 """
-房客 Pydantic Schema - v2.2 (pricing + v2 config)
+房客 Pydantic Schema - v2.3 (pricing + v2 config + rent_due_day)
 ✅ 欄位名稱對應 DB 實際欄位（rent / deposit / lease_start / lease_end）
 ✅ 新增 base_rent / payment_cycle / annual_discount_months
 ✅ rent = 折扣後月租（由 utils.rent_pricing 統一計算）
-✅ 移除 rent_due_day（DB 已不存在此欄）
-✅ [FIX] id_number regex: \\d → \d（raw string 修正）
+✅ [NEW] rent_due_day 欄位（每月繳費日 1-28，預設 1 號）
+✅ [FIX] id_number regex: \\d → \d（raw string 修正，真正生效）
 ✅ [FIX] status 改用 Literal（v2 建議）
 ✅ [FIX] rent 改為 Optional[float]，避免 default 0 觸發 gt 驗證失敗
 """
@@ -38,6 +38,16 @@ class TenantBase(BaseModel):
     rent: Optional[float] = Field(default=None, gt=0, description="折扣後月租（系統自動計算）", examples=[4583.33])
 
     deposit: float = Field(default=0, ge=0, description="押金", examples=[12000.0])
+
+    # ── 繳費日設定（DB 欄位）────────────────────────────
+    rent_due_day: int = Field(
+        default=1,
+        ge=1,
+        le=28,
+        description="每月繳費日（1-28，限 28 以內避免月底天數問題）",
+        examples=[1],
+    )
+
     lease_start: date = Field(..., description="入住日期", examples=["2025-06-01"])
     lease_end: Optional[date] = Field(None, description="退租日期", examples=["2026-06-01"])
     status: Literal["active", "inactive"] = Field(default="active", description="狀態", examples=["active"])
@@ -87,7 +97,7 @@ class TenantBase(BaseModel):
         """台灣身分證字號格式：1 英文 + 1~2 + 8 數字"""
         if v:
             v = v.strip().upper()
-            # ✅ FIX: raw string 內應用 \d（\\d 會匹配字面 \d）
+            # ✅ FIX: r"..." 內用 \d 才是 regex digit，\\d 是字面反斜線
             if not re.match(r"^[A-Z][12]\d{8}$", v):
                 raise ValueError("身分證字號格式錯誤（應為 1 個英文字母 + 9 個數字）")
         return v
@@ -117,6 +127,15 @@ class TenantUpdate(BaseModel):
     rent: Optional[float] = Field(None, gt=0)
 
     deposit: Optional[float] = Field(None, ge=0)
+
+    # ── 繳費日（可單獨更新）──────────────────────────────
+    rent_due_day: Optional[int] = Field(
+        None,
+        ge=1,
+        le=28,
+        description="每月繳費日（1-28）",
+    )
+
     lease_start: Optional[date] = None
     lease_end: Optional[date] = None
     status: Optional[Literal["active", "inactive"]] = None
@@ -153,6 +172,9 @@ class TenantListItem(BaseModel):
     base_rent: Optional[float] = None
     payment_cycle: Optional[str] = None
     annual_discount_months: Optional[int] = None
+
+    # 繳費日
+    rent_due_day: Optional[int] = Field(default=1, description="每月繳費日")
 
     status: str
     phone: Optional[str] = None
