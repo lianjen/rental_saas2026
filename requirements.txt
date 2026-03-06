@@ -1,7 +1,7 @@
 # ====================================================
 # 幸福之家 Pro - 租賃管理系統
-# Requirements v15.1 (Nordic Edition)
-# Updated: 2026-03-02
+# Requirements v15.2 (Nordic Edition)
+# Updated: 2026-03-06
 # ====================================================
 
 # ============== Core Framework ==============
@@ -23,6 +23,9 @@ SQLAlchemy==2.0.45
 # ============== Data Processing ==============
 pandas>=2.0.0
 numpy==2.2.1
+
+# ============== Chart / Visualization ==============
+plotly>=5.18.0
 
 # ============== Date & Time ==============
 python-dateutil==2.9.0
