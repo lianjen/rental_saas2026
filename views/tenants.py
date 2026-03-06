@@ -1,5 +1,5 @@
 """
-房客管理 - v5.5 (Payment Cycle + 年繳折扣)
+房客管理 - v5.6 (rent_due_day 正式連接)
 ✅ 整合認證系統 / 登入保護
 ✅ 整合 Pydantic 驗證層
 ✅ 完全移除 db 依賴
@@ -8,11 +8,11 @@
 ✅ [NEW] 繳費週期：月繳 / 半年繳 / 年繳
 ✅ [NEW] 年繳折扣月數（年繳才顯示）
 ✅ [NEW] 即時預覽折扣後月租
+✅ [NEW v5.6] rent_due_day 正式連接：新增/編輯皆讀寫，預設 1 號
 ✅ [FIX] 統一欄位：rent / deposit / lease_start / lease_end
 ✅ [FIX] st.number_input 型別一致（min_value 改為 0.0）
 ✅ [FIX] use_container_width → width="stretch"
 ✅ [FIX] \\n 跳脫修正 (format_validation_error 及 error 訊息)
-✅ [FIX] 移除 rent_due_day 不存在欄位存取
 ✅ [FIX] 活蹍 → 活躍（typo 修正）
 """
 
@@ -70,6 +70,7 @@ COLUMN_DISPLAY_MAP = {
     "status":                 "狀態",
     "email":                  "Email",
     "id_number":              "身分證字號",
+    "rent_due_day":           "每月繳租日",
     "notes":                  "備註",
 }
 
@@ -106,6 +107,7 @@ def format_validation_error(error: ValidationError) -> str:
         "deposit":                  "押金",
         "lease_start":              "入住日期",
         "lease_end":                "退租日期",
+        "rent_due_day":             "每月繳租日",
         "status":                   "狀態",
         "notes":                    "備註",
     }
@@ -114,7 +116,6 @@ def format_validation_error(error: ValidationError) -> str:
         field = err["loc"][0] if err["loc"] else "unknown"
         field_cn = field_names.get(str(field), str(field))
         errors.append(f"{field_cn}: {err['msg']}")
-    # ✅ FIX: "\n" 才是真正換行，"\\n" 是字面文字
     return "\n".join(errors)
 
 
@@ -189,7 +190,6 @@ def render_add_tab(tenant_service: TenantService):
             phone = st.text_input("電話", placeholder="例如: 0912-345-678", key="add_phone")
             email = st.text_input("Email", placeholder="例如: tenant@example.com", key="add_email")
 
-            # ✅ NEW: 繳費週期
             payment_cycle = st.selectbox(
                 "繳費週期 *",
                 PAYMENT.METHODS,
@@ -198,12 +198,10 @@ def render_add_tab(tenant_service: TenantService):
             )
 
         with col2:
-            # ✅ NEW: 原月租（base_rent）
             base_rent_input = st.number_input(
                 "原月租 *", min_value=0.0, value=6000.0, step=500.0, key="add_base_rent"
             )
 
-            # ✅ NEW: 年繳才顯示折扣月數
             annual_discount_months = 0
             if payment_cycle == "年繳":
                 annual_discount_months = st.number_input(
@@ -213,7 +211,6 @@ def render_add_tab(tenant_service: TenantService):
                     key="add_annual_discount_months",
                 )
 
-            # ✅ NEW: 即時預覽折扣後月租
             effective_rent = calc_effective_monthly_rent(
                 base_rent=float(base_rent_input),
                 payment_cycle=payment_cycle,
@@ -234,10 +231,11 @@ def render_add_tab(tenant_service: TenantService):
         st.divider()
         col3, col4 = st.columns(2)
         with col3:
-            st.number_input(
-                "每月繳租日（顯示用）",
-                min_value=1, max_value=31, value=5,
-                help="每月的第幾天繳租金（目前僅供顯示）",
+            # ✅ [v5.6] 預設 1 號，值會寫入 DB
+            rent_due_day_input = st.number_input(
+                "每月繳租日 *",
+                min_value=1, max_value=28, value=1,
+                help="每月的第幾天為租金到期日（1~28）",
                 key="add_due_day",
             )
         with col4:
@@ -251,7 +249,6 @@ def render_add_tab(tenant_service: TenantService):
 
         if submitted:
             try:
-                # ✅ FIX: 送 base_rent / payment_cycle / annual_discount_months
                 tenant_data = TenantCreate(
                     name=name,
                     room_number=room,
@@ -264,6 +261,8 @@ def render_add_tab(tenant_service: TenantService):
                     deposit=float(deposit_input),
                     lease_start=lease_start_input,
                     lease_end=lease_end_input if lease_end_input else None,
+                    # ✅ [v5.6] 正式寫入 rent_due_day
+                    rent_due_day=int(rent_due_day_input),
                     notes=notes if notes else None,
                 )
 
@@ -284,7 +283,6 @@ def render_add_tab(tenant_service: TenantService):
                     st.error(f"❌ {message}")
 
             except ValidationError as e:
-                # ✅ FIX: "\n" 而非 "\\n"
                 st.error(f"❌ 資料驗證失敗:\n{format_validation_error(e)}")
             except Exception as e:
                 st.error(f"❌ 新增失敗: {str(e)}")
@@ -330,6 +328,7 @@ def render_list_tab(tenant_service: TenantService):
             display_cols = [
                 "room_number", "name", "phone",
                 "payment_cycle", "base_rent", "rent",
+                "rent_due_day",
                 "lease_start", "lease_end", "status",
             ]
             available_cols = [c for c in display_cols if c in filtered_df.columns]
@@ -343,7 +342,6 @@ def render_list_tab(tenant_service: TenantService):
                     ).dt.strftime("%Y-%m-%d")
 
             if "狀態" in display_df.columns:
-                # ✅ FIX: 活蹍 → 活躍
                 display_df["狀態"] = display_df["狀態"].replace(
                     {"active": "✅ 活躍", "inactive": "❌ 已退租"}
                 )
@@ -353,6 +351,12 @@ def render_list_tab(tenant_service: TenantService):
                     display_df[m_col] = display_df[m_col].apply(
                         lambda x: f"NT$ {float(x):,.0f}" if pd.notna(x) else "-"
                     )
+
+            # ✅ [v5.6] 每月繳租日補 0 顯示（1 → "1 號"）
+            if "每月繳租日" in display_df.columns:
+                display_df["每月繳租日"] = display_df["每月繳租日"].apply(
+                    lambda x: f"{int(x)} 號" if pd.notna(x) else "-"
+                )
 
             data_table(display_df, key="tenant_list")
         else:
@@ -402,7 +406,6 @@ def render_edit_tab(tenant_service: TenantService):
                 phone = st.text_input("電話", value=td.get("phone") or "", key=f"edit_phone_{tenant_id}")
                 email = st.text_input("Email", value=td.get("email") or "", key=f"edit_email_{tenant_id}")
 
-                # ✅ NEW: 繳費週期（帶入既有值）
                 payment_cycle = st.selectbox(
                     "繳費週期 *",
                     PAYMENT.METHODS,
@@ -411,7 +414,6 @@ def render_edit_tab(tenant_service: TenantService):
                 )
 
             with col2:
-                # ✅ NEW: 原月租（base_rent，舊資料 fallback 到 rent）
                 base_rent_default = _safe_float(
                     td.get("base_rent") or td.get("rent"), 6000.0
                 )
@@ -423,7 +425,6 @@ def render_edit_tab(tenant_service: TenantService):
                     key=f"edit_base_rent_{tenant_id}",
                 )
 
-                # ✅ NEW: 年繳才顯示折扣月數
                 annual_discount_months = 0
                 if payment_cycle == "年繳":
                     annual_discount_months = st.number_input(
@@ -435,7 +436,6 @@ def render_edit_tab(tenant_service: TenantService):
                         key=f"edit_annual_discount_months_{tenant_id}",
                     )
 
-                # ✅ NEW: 即時預覽折扣後月租
                 effective_rent = calc_effective_monthly_rent(
                     base_rent=float(base_rent_input),
                     payment_cycle=payment_cycle,
@@ -462,10 +462,12 @@ def render_edit_tab(tenant_service: TenantService):
             st.divider()
             col3, col4 = st.columns(2)
             with col3:
-                st.number_input(
-                    "每月繳租日（顯示用）",
-                    min_value=1, max_value=31, value=5,
-                    help="目前僅供顯示，不寫入 DB",
+                # ✅ [v5.6] 從 tenants.rent_due_day 讀取，max=28 避免月底越界
+                rent_due_day_input = st.number_input(
+                    "每月繳租日 *",
+                    min_value=1, max_value=28,
+                    value=_safe_int(td.get("rent_due_day"), 1),
+                    help="每月的第幾天為租金到期日（1~28），影響帳單到期計算",
                     key=f"edit_due_day_{tenant_id}",
                 )
             with col4:
@@ -478,7 +480,6 @@ def render_edit_tab(tenant_service: TenantService):
                     "狀態",
                     ["active", "inactive"],
                     index=0 if td.get("status") == "active" else 1,
-                    # ✅ FIX: 活蹍 → 活躍
                     format_func=lambda x: "✅ 活躍" if x == "active" else "❌ 已退租",
                     key=f"edit_status_{tenant_id}",
                 )
@@ -496,7 +497,6 @@ def render_edit_tab(tenant_service: TenantService):
 
             if update_btn:
                 try:
-                    # ✅ FIX: 送 base_rent / payment_cycle / annual_discount_months
                     update_data = TenantUpdate(
                         name=name,
                         room_number=room,
@@ -509,6 +509,8 @@ def render_edit_tab(tenant_service: TenantService):
                         deposit=float(deposit_input),
                         lease_start=lease_start_input,
                         lease_end=lease_end_input if lease_end_input else None,
+                        # ✅ [v5.6] 正式寫入 rent_due_day
+                        rent_due_day=int(rent_due_day_input),
                         status=status,
                         notes=notes if notes else None,
                     )
@@ -533,7 +535,6 @@ def render_edit_tab(tenant_service: TenantService):
                         st.error(f"❌ {message}")
 
                 except ValidationError as e:
-                    # ✅ FIX: "\n" 而非 "\\n"
                     st.error(f"❌ 資料驗證失敗:\n{format_validation_error(e)}")
                 except Exception as e:
                     st.error(f"❌ 更新失敗: {str(e)}")
