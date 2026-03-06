@@ -39,7 +39,7 @@ except ImportError:
             st.caption(desc)
 
     def data_table(df, key="table"):
-        st.dataframe(df, use_container_width=True, key=key)
+        st.dataframe(df, width="stretch", key=key)
 
     def info_card(title, content, icon="", type="info"):
         st.info(f"{icon} {title}: {content}")
@@ -58,9 +58,9 @@ logger = logging.getLogger(__name__)
 _1F_ROOMS = ["1A", "1B"]
 
 # 台電風格色票
-_COLOR_BAR = "#FFD600"     # 用電度數：明黃
-_COLOR_LINE = "#00C853"    # 帳單金額：翠綠
-_COLOR_LATEST = "#FF6D00"  # 最新值標籤：橘
+_COLOR_BAR = "#FFD600"
+_COLOR_LINE = "#00C853"
+_COLOR_LATEST = "#FF6D00"
 _ROOM_COLORS = [
     "#1565C0", "#42A5F5", "#C62828", "#EF9A9A",
     "#2E7D32", "#66BB6A", "#00838F", "#80DEEA",
@@ -947,7 +947,7 @@ def render_statistics_tab(elec_service: ElectricityService):
             ),
             bargap=0.35,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     else:
         col_b, col_l = st.columns(2)
@@ -1028,7 +1028,7 @@ def render_statistics_tab(elec_service: ElectricityService):
                 bargap=0.15,
                 bargroupgap=0.05,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
         else:
             pivot = rt.pivot_table(
@@ -1058,9 +1058,6 @@ def render_deposit_tab(elec_service: ElectricityService):
 
     room_options = _get_room_options()
 
-    # ----------------------------
-    # 全房間餘額總覽
-    # ----------------------------
     st.markdown("### 🏠 全房間餘額總覽")
     summary_df = elec_service.get_all_rooms_deposit_summary()
 
@@ -1098,9 +1095,6 @@ def render_deposit_tab(elec_service: ElectricityService):
 
     st.divider()
 
-    # ----------------------------
-    # 選房間看流水帳
-    # ----------------------------
     section_header("房間流水帳", "📒", divider=False)
 
     selected_room = st.selectbox(
@@ -1172,9 +1166,6 @@ def render_deposit_tab(elec_service: ElectricityService):
 
     st.divider()
 
-    # ----------------------------
-    # 新增預收 / 扣電費
-    # ----------------------------
     form_tab1, form_tab2 = st.tabs(["➕ 新增預收", "⚡ 扣電費"])
 
     with form_tab1:
