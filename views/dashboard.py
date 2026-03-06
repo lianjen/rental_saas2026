@@ -3,15 +3,15 @@
 特性:
 - ✅ 使用 Service 架構
 - ✅ 修復 DataFrame 布林判斷錯誤
-- ✅ 修復 f-string 反斜線錯誤
 - ✅ 錯誤邊界處理
 - ✅ 效能優化 (快取)
 - ✅ 動態房間數
 - ✅ 統一日期處理
 - ✅ 完全適配 Supabase 欄位結構
 - ✅ [FIX] rent_amount → rent, move_out_date → lease_end
-- ✅ [FIX v3.3] use_container_width → width="stretch" (移除棄用警告)
-- ✅ [NEW v3.4] 房間卡片顯示 payment_cycle（月繳/半年繳/年繳）badge
+- ✅ [FIX v3.3] use_container_width → width="stretch"
+- ✅ [NEW v3.4] 房間卡片顯示 payment_cycle badge
+- ✅ [FIX v3.4b] 修復 Python 3.13 巢狀 f-string SyntaxError
 """
 
 import streamlit as st
@@ -144,12 +144,12 @@ def calculate_metrics(df_tenants: pd.DataFrame, df_overdue: pd.DataFrame) -> Dic
         overdue_count = 0
 
     return {
-        'total_rooms':     total_rooms,
-        'occupied':        occupied,
-        'vacant':          vacant,
-        'occupancy_rate':  occupancy_rate,
-        'overdue_amount':  int(overdue_amount),
-        'overdue_count':   overdue_count
+        'total_rooms':    total_rooms,
+        'occupied':       occupied,
+        'vacant':         vacant,
+        'occupancy_rate': occupancy_rate,
+        'overdue_amount': int(overdue_amount),
+        'overdue_count':  overdue_count
     }
 
 
@@ -191,7 +191,9 @@ def render_kpi_section(metrics: Dict):
 
 
 def render_lease_alerts(expiring_leases: List[Dict]):
+    """渲染租約警示。注意: 不能在 f-string 裡再嵌 f-string，Python 3.13 不允許。"""
     section_header("⏰ 租約到期警示", divider=True)
+
     if not expiring_leases:
         info_card("✅ 無即將到期租約", "45 天內沒有租約到期，一切正常！", "✅", "success")
         return
@@ -203,35 +205,40 @@ def render_lease_alerts(expiring_leases: List[Dict]):
     if urgent:
         st.error(f"🚨 緊急: {len(urgent)} 個租約 14 天內到期")
         for lease in urgent:
+            days_text = str(lease['days_left']) + " 天"
+            badge_html = status_badge(days_text, 'error')
             st.markdown(
                 f"**{lease['room']}** - {lease['tenant']} | "
-                f"到期日: {lease['lease_end']} | "
-                f"{status_badge(f\"{lease['days_left']} 天\", 'error')}",
+                f"到期日: {lease['lease_end']} | {badge_html}",
                 unsafe_allow_html=True
             )
+
     if warning:
         st.warning(f"⚠️ 注意: {len(warning)} 個租約 30 天內到期")
         for lease in warning:
+            days_text = str(lease['days_left']) + " 天"
+            badge_html = status_badge(days_text, 'warning')
             st.markdown(
                 f"**{lease['room']}** - {lease['tenant']} | "
-                f"到期日: {lease['lease_end']} | "
-                f"{status_badge(f\"{lease['days_left']} 天\", 'warning')}",
+                f"到期日: {lease['lease_end']} | {badge_html}",
                 unsafe_allow_html=True
             )
+
     if notice:
         st.info(f"ℹ️ 提醒: {len(notice)} 個租約 45 天內到期")
         with st.expander("查看詳情"):
             for lease in notice:
+                days_text = str(lease['days_left']) + " 天"
+                badge_html = status_badge(days_text, 'info')
                 st.markdown(
                     f"**{lease['room']}** - {lease['tenant']} | "
-                    f"到期日: {lease['lease_end']} | "
-                    f"{status_badge(f\"{lease['days_left']} 天\", 'info')}",
+                    f"到期日: {lease['lease_end']} | {badge_html}",
                     unsafe_allow_html=True
                 )
 
 
 def render_room_status(df_tenants: pd.DataFrame):
-    """渲染房間狀態 - v3.4 加入 payment_cycle badge"""
+    """渲染房間狀態 - 加入 payment_cycle badge"""
     section_header("🏠 房間狀態一覽", divider=True)
 
     room_status = {}
@@ -242,18 +249,14 @@ def render_room_status(df_tenants: pd.DataFrame):
         for _, tenant in df_tenants.iterrows():
             room = tenant['room_number']
             lease_end = safe_parse_date(tenant.get('lease_end'))
-
             status = 'warning' if (lease_end and lease_end <= warning_date) else 'occupied'
-
             room_status[room] = {
                 'tenant':        tenant['name'],
                 'status':        status,
                 'rent':          tenant.get('rent', 0),
-                # ✅ [NEW v3.4] 繳費方式，預設月繳
                 'payment_cycle': tenant.get('payment_cycle') or '月繳',
             }
 
-    # 每行 3 個卡片
     rows = [ROOMS.ALL_ROOMS[i:i+3] for i in range(0, len(ROOMS.ALL_ROOMS), 3)]
     for row_rooms in rows:
         cols = st.columns(3)
@@ -266,7 +269,7 @@ def render_room_status(df_tenants: pd.DataFrame):
                         room_info['tenant'],
                         room_info['status'],
                         room_info['rent'],
-                        room_info['payment_cycle'],   # ✅ 傳入繳費方式
+                        room_info['payment_cycle'],
                     )
                 else:
                     room_status_card(room, None, 'vacant')
@@ -330,8 +333,8 @@ def render():
 
     with st.spinner("載入資料中..."):
         try:
-            tenants  = tenant_service.get_all_tenants()
-            overdue  = payment_service.get_overdue_payments()
+            tenants    = tenant_service.get_all_tenants()
+            overdue    = payment_service.get_overdue_payments()
             df_tenants = safe_to_dataframe(tenants)
             df_overdue = safe_to_dataframe(overdue)
             logger.info(f"✅ 資料載入成功: 房客 {len(df_tenants)}，逾期 {len(df_overdue)}")
