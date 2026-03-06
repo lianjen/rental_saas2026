@@ -1,6 +1,6 @@
 """
-租客管理服務 - v5.4 (Payment Cycle + Annual Discount)
-⚡ FORCE RELOAD: 2026-03-05
+租客管理服務 - v5.5 (rent_due_day 支援)
+⚡ FORCE RELOAD: 2026-03-06
 ✅ 整合 Pydantic 驗證層
 ✅ 自動注入 user_id
 ✅ RLS Policy 兼容
@@ -14,9 +14,9 @@
 ✅ 完全適配 Supabase
 ✅ 向後兼容
 ✅ 欄位名稱已統一 (lease_start/end, rent, deposit)
-✅ 已移除 rent_due_day 欄位
 ✅ [NEW] base_rent / payment_cycle / annual_discount_months 欄位
 ✅ [NEW] rent 由 calc_effective_monthly_rent 自動計算
+✅ [NEW] rent_due_day 每月繳費日（預設 1 號，支援個別設定）
 """
 
 import pandas as pd
@@ -63,6 +63,7 @@ _TENANT_SELECT_COLS = """
     id, room_number, name, phone, email, id_number,
     deposit, rent,
     base_rent, payment_cycle, annual_discount_months,
+    rent_due_day,
     lease_start, lease_end, status, notes,
     created_at, updated_at
 """
@@ -305,7 +306,7 @@ class TenantService(BaseDBService):
                     return False, f"資料驗證失敗: {msg}"
 
             else:
-                # 舊版關鍵字參數：組裝 dict → TenantCreate
+                # 舊版關鍵字參數：組裝 dict → TenantCreate（不含 rent_due_day，使用預設 1）
                 data_dict = {
                     "name": name,
                     "room_number": room,
@@ -341,6 +342,9 @@ class TenantService(BaseDBService):
                 round_to=2,
             )
 
+            # rent_due_day：從 validated_data 取，Pydantic 已確保預設 1
+            rent_due_day = validated_data.get("rent_due_day", 1)
+
             # ── INSERT ───────────────────────────────────────────────
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -350,8 +354,9 @@ class TenantService(BaseDBService):
                     (user_id, room_number, name, phone, email, id_number,
                      base_rent, payment_cycle, annual_discount_months,
                      rent, deposit,
+                     rent_due_day,
                      lease_start, lease_end, status, notes)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
                     """,
                     (
@@ -366,6 +371,7 @@ class TenantService(BaseDBService):
                         validated_data["annual_discount_months"],
                         rent,
                         validated_data["deposit"],
+                        rent_due_day,
                         validated_data["lease_start"],
                         validated_data.get("lease_end"),
                         validated_data.get("status", "active"),
@@ -381,7 +387,8 @@ class TenantService(BaseDBService):
                 f"({validated_data['room_number']}) - ID: {tenant_id} "
                 f"| base_rent={validated_data['base_rent']} "
                 f"| payment_cycle={validated_data['payment_cycle']} "
-                f"| rent(effective)={rent}"
+                f"| rent(effective)={rent} "
+                f"| rent_due_day={rent_due_day}"
             )
             return True, f"成功新增租客 {validated_data['name']}"
 
@@ -441,6 +448,7 @@ class TenantService(BaseDBService):
         更新租客資訊（自動驗證權限）
         任何 pricing 欄位（base_rent/payment_cycle/annual_discount_months）
         有變動時，自動重算 rent 寫入 DB。
+        rent_due_day 可單獨更新，不影響其他欄位。
         """
         try:
             existing_tenant = self.get_tenant_by_id(tenant_id)
@@ -835,14 +843,14 @@ if __name__ == "__main__":
     from datetime import timedelta
 
     service = TenantService()
-    print("=== 測試 TenantService v5.4 ===\n")
+    print("=== 測試 TenantService v5.5 ===\n")
 
     print("0. 認證狀態:")
     print(f"   已登入: {service.is_authenticated()}")
     print(f"   開發模式: {service.is_dev_mode()}")
     print(f"   User ID: {service._get_current_user_id() or '無'}\n")
 
-    print("1. Pydantic 驗證（年繳折 1 個月 - 應成功）:")
+    print("1. Pydantic 驗證（年繳折 1 個月 + 繳費日 5 號）:")
     try:
         t = TenantCreate(
             name="測試房客",
@@ -852,34 +860,48 @@ if __name__ == "__main__":
             payment_cycle="年繳",
             annual_discount_months=1,
             deposit=12000.0,
+            rent_due_day=5,
             lease_start=date.today(),
             lease_end=date.today() + timedelta(days=365),
         )
-        print(f"   ✅ base_rent={t.base_rent} | payment_cycle={t.payment_cycle} | rent={t.rent}\n")
+        print(f"   ✅ base_rent={t.base_rent} | payment_cycle={t.payment_cycle} | rent={t.rent} | rent_due_day={t.rent_due_day}\n")
     except ValidationError as e:
         print(f"   ❌ 驗證失敗: {e}\n")
 
-    print("2. Pydantic 驗證（錯誤資料 - 應攔截）:")
+    print("2. Pydantic 驗證（預設繳費日 = 1 號）:")
+    try:
+        t2 = TenantCreate(
+            name="預設房客",
+            room_number="3A",
+            base_rent=6000.0,
+            lease_start=date.today(),
+        )
+        print(f"   ✅ rent_due_day={t2.rent_due_day}（預設 1 號）\n")
+    except ValidationError as e:
+        print(f"   ❌ 驗證失敗: {e}\n")
+
+    print("3. Pydantic 驗證（錯誤資料 - 應攔截）:")
     try:
         TenantCreate(
             name="王",         # ❌ 太短
             room_number="4D",
             base_rent=-100,    # ❌ 負數
+            rent_due_day=31,   # ❌ 超過 28
             lease_start=date.today(),
         )
         print("   ❌ 未攔截錯誤\n")
     except ValidationError as e:
         print(f"   ✅ 成功攔截 {e.error_count()} 個錯誤\n")
 
-    print("3. 所有房客 (DataFrame):")
+    print("4. 所有房客 (DataFrame):")
     df = service.get_tenants()
     print(f"   共 {len(df)} 筆, 欄位: {list(df.columns)}\n")
 
-    print("4. 統計:")
+    print("5. 統計:")
     for k, v in service.get_tenant_statistics().items():
         print(f"   {k}: {v}")
 
-    print("\n5. 可用房間:")
+    print("\n6. 可用房間:")
     vacant = service.get_vacant_rooms()
     print(f"   {', '.join(vacant[:6])}... 共 {len(vacant)} 間")
 
