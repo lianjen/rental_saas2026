@@ -1,11 +1,10 @@
 """
-電費管理 - v4.8
-✅ v4.7 所有功能保留
-✅ [NEW v4.8] 新增「📊 用電統計」 Tab
-      - 雙軸指標圖：黄色長條 = 總度數，綠色折線 = 總金額（仿台電 App）
-      - 年度筛選：可切換年層查看
-      - 4 大指標：累計期數、總度數、總金額、平均每期
-      - 房間用電趨勢表（可展開）
+電費管理 - v4.9
+✅ v4.8 所有功能保留
+✅ [FIX v4.9] yaxis='y1' → 'y'（修正雙軸圖柱狀圖不對齊問題）
+✅ [FIX v4.9] 單筆資料時圖不再變形
+✅ [NEW v4.9] 仿台電 App 風格：黃柱 + 橘色最新值標籤
+✅ [NEW v4.9] 各房間改為分組 bar（不再是橫條堆疊）
 """
 
 import streamlit as st
@@ -58,6 +57,15 @@ logger = logging.getLogger(__name__)
 
 _1F_ROOMS = ["1A", "1B"]
 
+# 台電風格色票
+_COLOR_BAR      = "#FFD600"   # 用電度數：明黃
+_COLOR_LINE     = "#00C853"   # 帳單金額：翠綠
+_COLOR_LATEST   = "#FF6D00"   # 最新值標籤：橘
+_ROOM_COLORS    = [
+    "#1565C0","#42A5F5","#C62828","#EF9A9A",
+    "#2E7D32","#66BB6A","#00838F","#80DEEA",
+    "#E65100","#FFB74D","#4527A0","#B39DDB",
+]
 
 # ============================================================
 # 樓層配置
@@ -77,7 +85,6 @@ def calculate_electricity_charges(
     taipower_bills: List[Dict],
     room_readings: Dict[str, float],
 ) -> Optional[Dict]:
-    """v4.8 電費計算核心（邏輯不變）"""
     try:
         floor_1f      = next((b for b in taipower_bills if b["floor_label"] == "1F"), None)
         floors_2f_4f  = [b for b in taipower_bills if b["floor_label"] != "1F"]
@@ -472,7 +479,7 @@ def render_calculation_tab(elec_service: ElectricityService,
     if notify_mode == "不發送":
         st.info("⚪ 不會發送任何通知")
     elif notify_mode == "手動發送":
-        st.warning("⚠️ 需要手動點擊「發送〝")
+        st.warning("⚠️ 需要手動點擊「發送」")
         if st.button("📤 立即發送電費通知", type="primary"):
             with st.spinner("正在發送通知..."):
                 success_count = fail_count = 0
@@ -570,19 +577,18 @@ def render_records_tab(elec_service: ElectricityService):
 
 
 # ============================================================
-# Tab 4: 用電統計  [NEW v4.8]
+# Tab 4: 用電統計  [v4.9 重構]
 # ============================================================
 def render_statistics_tab(elec_service: ElectricityService):
     section_header("用電量統計", "📊")
-    st.caption("💡 自動從所有已計算期間彙結，可查看全年用電趨勢")
+    st.caption("💡 自動從所有已計算期間彙整，可查看全年用電趨勢")
 
-    # ─ 取得所有期間資料 ──────────────────────────────────
     periods = elec_service.get_all_periods()
     if not periods:
         empty_state("尚無期間", "📅", "請先建立期間並完成計算")
         return
 
-    stats_rows = []
+    stats_rows      = []
     room_trend_rows = []
 
     for p in sorted(periods, key=lambda x: (x["period_year"], x["period_month_start"])):
@@ -592,29 +598,27 @@ def render_statistics_tab(elec_service: ElectricityService):
 
         label = f"{p['period_year']}/{p['period_month_start']:02d}-{p['period_month_end']:02d}"
 
-        # 相容欄位名稱
-        kwh_col = "總度數" if "總度數" in df.columns else (
-                  "使用度數" if "使用度數" in df.columns else "kwh_used")
-        amt_col = "應繳金額" if "應繳金額" in df.columns else "amount_due"
+        kwh_col  = "總度數"   if "總度數"   in df.columns else (
+                   "使用度數" if "使用度數" in df.columns else "kwh_used")
+        amt_col  = "應繳金額" if "應繳金額" in df.columns else "amount_due"
         room_col = "房號"     if "房號"     in df.columns else "room_number"
 
         stats_rows.append({
-            "期間":    label,
-            "年份":    p["period_year"],
-            "開始月":  p["period_month_start"],
-            "總度數": round(df[kwh_col].sum(), 1),
+            "期間":   label,
+            "年份":   p["period_year"],
+            "開始月": p["period_month_start"],
+            "總度數": round(float(df[kwh_col].sum()), 1),
             "總金額": int(df[amt_col].sum()),
-            "期間ID":  p["id"],
+            "期間ID": p["id"],
         })
 
-        # 房間級度數
         for _, row in df.iterrows():
             room_trend_rows.append({
-                "期間":  label,
-                "年份":  p["period_year"],
-                "房號":  row.get(room_col, ""),
-                "度數":  round(float(row.get(kwh_col, 0)), 1),
-                "金額":  int(row.get(amt_col, 0)),
+                "期間": label,
+                "年份": p["period_year"],
+                "房號": row.get(room_col, ""),
+                "度數": round(float(row.get(kwh_col, 0)), 1),
+                "金額": int(row.get(amt_col, 0)),
             })
 
     if not stats_rows:
@@ -624,20 +628,18 @@ def render_statistics_tab(elec_service: ElectricityService):
     stats_df      = pd.DataFrame(stats_rows)
     room_trend_df = pd.DataFrame(room_trend_rows)
 
-    # ─ 年度筛選 ───────────────────────────────────────
+    # ─ 年度篩選 ───────────────────────────────────────
     available_years = sorted(stats_df["年份"].unique(), reverse=True)
     year_options    = ["全部"] + [str(y) for y in available_years]
 
     col_yr, col_hint = st.columns([2, 5])
     with col_yr:
-        selected_year = st.selectbox("📆 年度筛選", year_options, key="stat_year_filter")
+        selected_year = st.selectbox("📆 年度篩選", year_options, key="stat_year_filter")
     with col_hint:
-        st.caption("選择年度即可築選該年度所有期間")
+        st.caption("選擇年度即可篩選該年度所有期間")
 
-    if selected_year != "全部":
-        filtered = stats_df[stats_df["年份"] == int(selected_year)].copy()
-    else:
-        filtered = stats_df.copy()
+    filtered = stats_df.copy() if selected_year == "全部" else \
+               stats_df[stats_df["年份"] == int(selected_year)].copy()
 
     if filtered.empty:
         st.warning("⚠️ 該年度尚無數據")
@@ -650,69 +652,120 @@ def render_statistics_tab(elec_service: ElectricityService):
     avg_kwh       = total_kwh / total_periods if total_periods else 0
 
     c1, c2, c3, c4 = st.columns(4)
-    with c1: metric_card("累計期數",   f"{total_periods} 期",       "", "📅", "normal")
-    with c2: metric_card("總用電量",   f"{total_kwh:,.0f} 度",     "", "⚡", "normal")
-    with c3: metric_card("總收費金額", f"${total_amt:,}",           "", "💰", "success")
-    with c4: metric_card("平均每期",   f"{avg_kwh:,.0f} 度",        "", "📊", "normal")
+    with c1: metric_card("累計期數",   f"{total_periods} 期",   "", "📅", "normal")
+    with c2: metric_card("總用電量",   f"{total_kwh:,.0f} 度",  "", "⚡", "normal")
+    with c3: metric_card("總收費金額", f"${total_amt:,}",        "", "💰", "success")
+    with c4: metric_card("平均每期",   f"{avg_kwh:,.0f} 度",    "", "📊", "normal")
 
     st.divider()
 
-    # ─ 雙軸指標圖（仿台電 App）────────────────────────
-    section_header("用電度數與費用趨勢", "📈", divider=False)
+    # ─ 雙軸 Combo Chart（仿台電 App）─────────────────
+    section_header("用電度數與帳單金額趨勢", "📈", divider=False)
 
     if HAS_PLOTLY:
+        periods_list = filtered["期間"].tolist()
+        usages       = filtered["總度數"].tolist()
+        amounts      = filtered["總金額"].tolist()
+
         fig = go.Figure()
 
-        # 黄色長條 = 總度數（左軸）
+        # ① 黃色柱狀 = 用電度數（右 Y 軸）
+        # ✅ FIX v4.9: yaxis="y1" → yaxis="y2"（右軸）
         fig.add_trace(go.Bar(
-            x=filtered["期間"],
-            y=filtered["總度數"],
-            name="總度數 (度)",
-            marker_color="#F5C518",
-            opacity=0.85,
-            yaxis="y1",
-            hovertemplate="%{x}<br>總度數: <b>%{y:.0f} 度</b><extra></extra>",
+            x             = periods_list,
+            y             = usages,
+            name          = "用電度數（度）",
+            yaxis         = "y2",                  # ✅ 右軸
+            marker        = dict(
+                color        = _COLOR_BAR,
+                line         = dict(color="#F9A825", width=1),
+                cornerradius = 4,
+            ),
+            opacity       = 0.85,
+            hovertemplate = "<b>%{x}</b><br>用電度數：<b>%{y:,.0f} 度</b><extra></extra>",
         ))
 
-        # 綠色折線 = 總金額（右軸）
+        # ② 綠色折線 = 帳單金額（左 Y 軸）
+        # ✅ FIX v4.9: yaxis="y2" → yaxis="y"（左軸）
         fig.add_trace(go.Scatter(
-            x=filtered["期間"],
-            y=filtered["總金額"],
-            name="總金額 (元)",
-            mode="lines+markers",
-            line=dict(color="#2ca02c", width=2.5),
-            marker=dict(size=8, color="#2ca02c"),
-            yaxis="y2",
-            hovertemplate="%{x}<br>總金額: <b>$%{y:,}</b><extra></extra>",
+            x             = periods_list,
+            y             = amounts,
+            name          = "帳單金額（元）",
+            yaxis         = "y",                   # ✅ 左軸
+            mode          = "lines+markers",
+            line          = dict(color=_COLOR_LINE, width=2.5),
+            marker        = dict(
+                color = _COLOR_LINE,
+                size  = 9,
+                line  = dict(color="white", width=2),
+            ),
+            hovertemplate = "<b>%{x}</b><br>帳單金額：<b>$%{y:,}</b><extra></extra>",
         ))
+
+        # 最新一筆橘色標籤（仿台電 App）
+        if usages:
+            fig.add_annotation(
+                x         = periods_list[-1],
+                y         = usages[-1],
+                yref      = "y2",
+                text      = f"<b>{usages[-1]:,.0f}度</b>",
+                showarrow = False,
+                bgcolor   = _COLOR_LATEST,
+                font      = dict(color="white", size=13),
+                borderpad = 6,
+                xanchor   = "center",
+                yanchor   = "bottom",
+                yshift    = 12,
+            )
 
         fig.update_layout(
-            title=dict(text="用電度數 × 費用比較", font=dict(size=16)),
-            xaxis=dict(title="期間", tickangle=-30),
-            yaxis=dict(
-                title="總度數 (度)",
-                side="left",
-                showgrid=True,
-                gridcolor="#eeeeee",
+            height        = 420,
+            plot_bgcolor  = "rgba(0,0,0,0)",
+            paper_bgcolor = "rgba(0,0,0,0)",
+            hovermode     = "x unified",
+            legend        = dict(
+                orientation = "h",
+                x=0.5, xanchor="center",
+                y=1.06, yanchor="bottom",
+                font=dict(size=13),
             ),
-            yaxis2=dict(
-                title="總金額 (元)",
-                side="right",
-                overlaying="y",
-                showgrid=False,
+            margin        = dict(l=60, r=60, t=50, b=50),
+            xaxis         = dict(
+                title     = "期間",
+                type      = "category",
+                tickangle = -30,
+                gridcolor = "rgba(200,200,200,0.3)",
             ),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            plot_bgcolor="white",
-            height=420,
-            hovermode="x unified",
-            margin=dict(l=10, r=10, t=50, b=40),
+            # 左軸：帳單金額
+            yaxis         = dict(
+                title     = "帳單金額（元）",
+                gridcolor = "rgba(200,200,200,0.3)",
+                zeroline  = False,
+                tickformat= ",",
+            ),
+            # 右軸：用電度數（overlaying 左軸）
+            yaxis2        = dict(
+                title     = "用電度數（度）",
+                overlaying= "y",
+                side      = "right",
+                gridcolor = "rgba(0,0,0,0)",
+                zeroline  = False,
+                tickformat= ",",
+            ),
+            bargap        = 0.35,
         )
         st.plotly_chart(fig, use_container_width=True)
+
     else:
-        # Plotly 未安裝，用 Streamlit 原生圖表降級
-        st.bar_chart(filtered.set_index("期間")["總度數"])
-        st.line_chart(filtered.set_index("期間")["總金額"])
-        st.caption("建議安裝 'plotly' 可獲得雙軸指標圖")
+        # plotly 未安裝時降級（請執行 pip install plotly）
+        col_b, col_l = st.columns(2)
+        with col_b:
+            st.write("**用電度數**")
+            st.bar_chart(filtered.set_index("期間")["總度數"])
+        with col_l:
+            st.write("**帳單金額**")
+            st.line_chart(filtered.set_index("期間")["總金額"])
+        st.warning("⚠️ 安裝 plotly 可獲得仿台電 App 雙軸圖：`pip install plotly`")
 
     st.divider()
 
@@ -724,50 +777,76 @@ def render_statistics_tab(elec_service: ElectricityService):
 
     st.divider()
 
-    # ─ 房間用電趨勢（可展開）───────────────────────
+    # ─ 各房間用電趨勢（可展開）───────────────────────
     with st.expander("🏠 展開各房間用電趨勢", expanded=False):
         if room_trend_df.empty:
             st.info("尚無房間級資料")
+            return
+
+        rt = room_trend_df.copy() if selected_year == "全部" else \
+             room_trend_df[room_trend_df["年份"] == int(selected_year)].copy()
+
+        if HAS_PLOTLY:
+            rooms = sorted(rt["房號"].unique().tolist())
+            periods_order = filtered["期間"].tolist()
+
+            fig2 = go.Figure()
+            for i, room in enumerate(rooms):
+                rdf = rt[rt["房號"] == room].sort_values("期間")
+                fig2.add_trace(go.Bar(
+                    name          = str(room),
+                    x             = rdf["期間"].tolist(),
+                    y             = rdf["度數"].tolist(),
+                    marker_color  = _ROOM_COLORS[i % len(_ROOM_COLORS)],
+                    opacity       = 0.88,
+                    hovertemplate = (
+                        f"<b>{room}</b><br>"
+                        "期間：%{x}<br>"
+                        "用電：<b>%{y:,.0f} 度</b><extra></extra>"
+                    ),
+                ))
+
+            fig2.update_layout(
+                height        = 380,
+                barmode       = "group",           # ✅ 分組柱狀，不再堆疊
+                plot_bgcolor  = "rgba(0,0,0,0)",
+                paper_bgcolor = "rgba(0,0,0,0)",
+                hovermode     = "x unified",
+                legend        = dict(
+                    orientation = "h",
+                    x=0.5, xanchor="center",
+                    y=-0.22, yanchor="top",
+                    font=dict(size=11),
+                ),
+                margin        = dict(l=50, r=20, t=20, b=60),
+                xaxis         = dict(
+                    title     = "期間",
+                    type      = "category",
+                    tickangle = -30,
+                    categoryorder = "array",
+                    categoryarray = periods_order,
+                    gridcolor = "rgba(200,200,200,0.3)",
+                ),
+                yaxis         = dict(
+                    title     = "用電度數（度）",
+                    gridcolor = "rgba(200,200,200,0.3)",
+                    zeroline  = False,
+                ),
+                bargap        = 0.15,
+                bargroupgap   = 0.05,
+            )
+            st.plotly_chart(fig2, use_container_width=True)
         else:
-            if selected_year != "全部":
-                rt = room_trend_df[room_trend_df["年份"] == int(selected_year)].copy()
-            else:
-                rt = room_trend_df.copy()
+            pivot = rt.pivot_table(
+                index="期間", columns="房號", values="度數", aggfunc="sum"
+            ).fillna(0).reindex(filtered["期間"].tolist())
+            st.bar_chart(pivot)
 
-            # pivot: 期間 x 房號 → 度數
-            pivot = rt.pivot_table(index="期間", columns="房號",
-                                    values="度數", aggfunc="sum").fillna(0)
-            pivot = pivot.reindex(filtered["期間"].tolist())  # 保持期間順序
-
-            if HAS_PLOTLY:
-                fig2 = go.Figure()
-                colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728",
-                          "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
-                          "#bcbd22", "#17becf", "#aec7e8", "#ffbb78"]
-                for i, room in enumerate(pivot.columns):
-                    fig2.add_trace(go.Bar(
-                        name=room,
-                        x=pivot.index,
-                        y=pivot[room],
-                        marker_color=colors[i % len(colors)],
-                        hovertemplate=f"{room}<br>%{{x}}<br>度數: <b>%{{y:.0f}} 度</b><extra></extra>",
-                    ))
-                fig2.update_layout(
-                    barmode="group",
-                    title="各房間用電度數比較",
-                    xaxis=dict(title="期間", tickangle=-30),
-                    yaxis=dict(title="度數"),
-                    legend=dict(orientation="h", yanchor="bottom", y=1.02),
-                    plot_bgcolor="white",
-                    height=380,
-                    margin=dict(l=10, r=10, t=50, b=40),
-                )
-                st.plotly_chart(fig2, use_container_width=True)
-            else:
-                st.bar_chart(pivot)
-
-            st.write("**各房間度數明細**")
-            data_table(pivot.reset_index().rename(columns={"index": "期間"}), key="room_trend_table")
+        st.write("**各房間度數明細**")
+        pivot2 = rt.pivot_table(
+            index="期間", columns="房號", values="度數", aggfunc="sum"
+        ).fillna(0).reindex(filtered["期間"].tolist()).reset_index()
+        data_table(pivot2, key="room_trend_table")
 
 
 # ============================================================
