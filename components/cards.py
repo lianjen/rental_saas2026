@@ -2,6 +2,7 @@
 UI 元件庫 - 統一視覺風格
 ✅ [FIX v1.1] data_table: use_container_width → width="stretch" (移除棄用警告)
 ✅ [FIX v1.2] data_table: index 從 1 開始（全局生效）
+✅ [NEW v1.3] room_status_card 加入 payment_cycle 繳費方式標籤
 """
 
 import streamlit as st
@@ -9,17 +10,6 @@ from typing import Optional
 
 
 def section_header(title: str, icon: str = "📌", divider: bool = True):
-    """
-    區段標題
-
-    Args:
-        title: 標題文字
-        icon: 圖示 emoji
-        divider: 是否顯示分隔線
-
-    Usage:
-        section_header("房客管理", "👥")
-    """
     st.markdown(f"### {icon} {title}")
     if divider:
         st.divider()
@@ -27,25 +17,13 @@ def section_header(title: str, icon: str = "📌", divider: bool = True):
 
 def metric_card(label: str, value: str, delta: Optional[str] = None,
                 icon: str = "📊", color: str = "normal"):
-    """
-    指標卡片
-
-    Args:
-        label: 標籤
-        value: 數值
-        delta: 變化量 (可選)
-        icon: 圖示
-        color: 顏色主題 ('normal', 'success', 'warning', 'error')
-    """
     color_map = {
-        'normal': '#1f77b4',
+        'normal':  '#1f77b4',
         'success': '#2ca02c',
         'warning': '#ff7f0e',
-        'error': '#d62728'
+        'error':   '#d62728'
     }
-
     bg_color = color_map.get(color, color_map['normal'])
-
     st.markdown(f"""
         <div style="
             background: linear-gradient(135deg, {bg_color}22 0%, {bg_color}11 100%);
@@ -66,23 +44,14 @@ def metric_card(label: str, value: str, delta: Optional[str] = None,
 
 
 def status_badge(text: str, status: str = "default"):
-    """
-    狀態徽章
-
-    Args:
-        text: 顯示文字
-        status: 'success', 'warning', 'error', 'info', 'default'
-    """
     colors = {
         'success': ('#d4edda', '#155724'),
         'warning': ('#fff3cd', '#856404'),
-        'error': ('#f8d7da', '#721c24'),
-        'info': ('#d1ecf1', '#0c5460'),
+        'error':   ('#f8d7da', '#721c24'),
+        'info':    ('#d1ecf1', '#0c5460'),
         'default': ('#e2e3e5', '#383d41')
     }
-
     bg, fg = colors.get(status, colors['default'])
-
     return f"""
         <span style="
             background-color: {bg};
@@ -98,24 +67,13 @@ def status_badge(text: str, status: str = "default"):
 
 def info_card(title: str, content: str, icon: str = "ℹ️",
               type: str = "info"):
-    """
-    資訊卡片
-
-    Args:
-        title: 標題
-        content: 內容
-        icon: 圖示
-        type: 'info', 'success', 'warning', 'error'
-    """
     type_colors = {
-        'info': ('#cfe2ff', '#084298'),
+        'info':    ('#cfe2ff', '#084298'),
         'success': ('#d1e7dd', '#0f5132'),
         'warning': ('#fff3cd', '#664d03'),
-        'error': ('#f8d7da', '#842029')
+        'error':   ('#f8d7da', '#842029')
     }
-
     bg, border = type_colors.get(type, type_colors['info'])
-
     st.markdown(f"""
         <div style="
             background-color: {bg};
@@ -134,33 +92,71 @@ def info_card(title: str, content: str, icon: str = "ℹ️",
     """, unsafe_allow_html=True)
 
 
-def room_status_card(room: str, tenant_name: Optional[str],
-                     status: str, rent: Optional[float] = None):
+# ── 繳費方式設定（badge 顏色 & 圖示）────────────────────────────
+_CYCLE_STYLE = {
+    "月繳":  {"bg": "#e3f2fd", "fg": "#1565c0", "icon": "📅"},
+    "半年繳": {"bg": "#e8f5e9", "fg": "#2e7d32", "icon": "📆"},
+    "年繳":  {"bg": "#f3e5f5", "fg": "#6a1b9a", "icon": "🏷️"},
+}
+
+
+def _cycle_badge_html(payment_cycle: Optional[str]) -> str:
+    """產生繳費方式 badge HTML"""
+    if not payment_cycle:
+        return ""
+    style = _CYCLE_STYLE.get(payment_cycle, {"bg": "#f5f5f5", "fg": "#757575", "icon": ""})
+    return (
+        f'<span style="'
+        f'background:{style["bg"]};'
+        f'color:{style["fg"]};'
+        f'padding:2px 8px;'
+        f'border-radius:10px;'
+        f'font-size:0.75rem;'
+        f'font-weight:600;'
+        f'display:inline-block;'
+        f'">{style["icon"]} {payment_cycle}</span>'
+    )
+
+
+def room_status_card(
+    room: str,
+    tenant_name: Optional[str],
+    status: str,
+    rent: Optional[float] = None,
+    payment_cycle: Optional[str] = None,   # ✅ [NEW v1.3] 繳費方式
+):
     """
     房間狀態卡片
 
     Args:
-        room: 房號
-        tenant_name: 房客名稱
-        status: 'occupied', 'vacant', 'warning'
-        rent: 租金
+        room:          房號
+        tenant_name:   房客名稱
+        status:        'occupied' | 'vacant' | 'warning'
+        rent:          月租金（折扣後有效月租）
+        payment_cycle: 繳費方式，'月繳' | '半年繳' | '年繳'
     """
     status_config = {
-        'occupied': ('🟢', '已出租', '#d4edda', '#155724'),
-        'vacant': ('⚪', '空房', '#e2e3e5', '#6c757d'),
-        'warning': ('🟡', '即將到期', '#fff3cd', '#856404')
+        'occupied': ('🟢', '已出租',    '#d4edda', '#155724'),
+        'vacant':   ('⚪', '空房',      '#e2e3e5', '#6c757d'),
+        'warning':  ('🟡', '即將到期',  '#fff3cd', '#856404')
     }
-
     icon, status_text, bg, border = status_config.get(status, status_config['vacant'])
 
-    tenant_info = f"""
-        <div style="font-size: 1rem; font-weight: 500; margin: 0.5rem 0;">
-            {tenant_name}
-        </div>
-        <div style="font-size: 0.9rem; color: #666;">
-            月租: ${rent:,} 元
-        </div>
-    """ if tenant_name else '<div style="color: #999; font-style: italic;">待出租</div>'
+    if tenant_name:
+        cycle_html = _cycle_badge_html(payment_cycle)
+        tenant_info = f"""
+            <div style="font-size: 1rem; font-weight: 500; margin: 0.5rem 0;">
+                {tenant_name}
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                <span style="font-size: 0.9rem; color: #555;">
+                    月租: <b>${rent:,}</b> 元
+                </span>
+                {cycle_html}
+            </div>
+        """
+    else:
+        tenant_info = '<div style="color: #999; font-style: italic;">待出租</div>'
 
     st.markdown(f"""
         <div style="
@@ -188,13 +184,9 @@ def data_table(df, key: str = "table"):
     """
     美化的資料表格
     ✅ [v1.2] index 自動從 1 開始，全局生效
-
-    Args:
-        df: pandas DataFrame
-        key: unique key for the table
     """
     display = df.copy()
-    display.index = range(1, len(display) + 1)   # ✅ 編號從 1 開始
+    display.index = range(1, len(display) + 1)
     st.dataframe(
         display,
         width="stretch",
@@ -204,14 +196,6 @@ def data_table(df, key: str = "table"):
 
 
 def empty_state(message: str, icon: str = "📭", suggestion: Optional[str] = None):
-    """
-    空狀態提示
-
-    Args:
-        message: 提示訊息
-        icon: 圖示
-        suggestion: 建議操作 (可選)
-    """
     st.markdown(f"""
         <div style="
             text-align: center;
@@ -230,32 +214,10 @@ def empty_state(message: str, icon: str = "📭", suggestion: Optional[str] = No
 
 
 def loading_spinner(text: str = "載入中..."):
-    """
-    載入指示器
-
-    Args:
-        text: 提示文字
-    """
     return st.spinner(text)
 
 
 def confirm_dialog(message: str, key: str) -> bool:
-    """
-    確認對話框 (需配合 session_state)
-
-    Args:
-        message: 確認訊息
-        key: session_state key
-
-    Returns:
-        bool: 是否已確認
-
-    Usage:
-        if st.button("刪除"):
-            if confirm_dialog("確定要刪除嗎?", "delete_confirm"):
-                # 執行刪除
-                del st.session_state.delete_confirm
-    """
     if st.session_state.get(key):
         st.warning(f"⚠️ {message}")
         col1, col2 = st.columns(2)
@@ -272,13 +234,5 @@ def confirm_dialog(message: str, key: str) -> bool:
 
 
 def progress_bar(current: int, total: int, label: str = ""):
-    """
-    進度條
-
-    Args:
-        current: 當前進度
-        total: 總數
-        label: 標籤
-    """
     percentage = current / total if total > 0 else 0
     st.progress(percentage, text=f"{label} ({current}/{total})")
