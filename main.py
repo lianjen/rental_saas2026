@@ -1,21 +1,14 @@
 """
 幸福之家 Pro - 租賃管理系統
-Nordic Edition v15.1 (Service Architecture + Auth Gatekeeper + Cookie Persistence)
-✅ 完全移除 db 依賴
-✅ 使用 Service 架構
-✅ 動態載入頁面模組
-✅ Supabase Auth 認證系統
-✅ 登入守門員機制
-✅ Session 自動刷新
-✅ Cookie 持久化（F5 刷新不登出）
-✅ 角色權限管理
-✅ 完整錯誤處理
+Nordic Edition v15.2 (Service Architecture + Auth Gatekeeper + Cookie Persistence)
+✅ [FIX v15.2] render_menu() 加入 on_change callback → 修正「點一次沒反應」導航 bug
+✅ v15.1 所有功能保留
 """
 
 import os
 import logging
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta, timezone
+from typing import Optional
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import streamlit as st
@@ -70,7 +63,7 @@ key = "eyJhbGciOi..."
 
 APP_CONFIG = {
     "title":       get_env("APP_TITLE", "幸福之家 Pro"),
-    "version":     get_env("APP_VERSION", "v15.1"),
+    "version":     get_env("APP_VERSION", "v15.2"),
     "environment": get_env("ENVIRONMENT", "production"),
     "log_level":   get_env("LOG_LEVEL", "INFO"),
     "dev_mode":    get_env("DEV_MODE", "false").lower() == "true",
@@ -153,10 +146,6 @@ def check_database_health() -> bool:
 # ============================================
 
 def _try_restore_from_cookie() -> bool:
-    """
-    F5 刷新後，嘗試從 Cookie 讀取 refresh_token 带還原 Session。
-    還原成功返回 True，否則 False。
-    """
     try:
         from utils.cookie_manager import load_auth_cookie
         cookie = load_auth_cookie()
@@ -192,7 +181,6 @@ def _try_restore_from_cookie() -> bool:
 
 
 def _sync_cookie() -> None:
-    """登入或 Token 刷新後，同步最新 Token 到 Cookie"""
     try:
         from utils.cookie_manager import save_auth_cookie, load_auth_cookie
         at = st.session_state.get("access_token",  "")
@@ -261,7 +249,49 @@ def check_page_permission(page_name: str) -> bool:
 
 
 # ============================================
-# 9. Main (Gatekeeper + Cookie Restore)
+# 9. ✅ [FIX v15.2] Navigation on_change callback
+# ============================================
+
+# 各頁面可能殘留的 pending / confirm state keys，切頁時全部清除
+_PAGE_PENDING_KEYS = [
+    # 支出記錄
+    "pending_expense_no_desc",
+    "confirm_delete_expense",
+    # 房客管理
+    "confirm_delete",
+    # 租金管理
+    "confirm_delete_rent",
+    # 電費管理
+    "confirm_delete_elec",
+    # 其他可能的確認 key（prefix 方式在下方動態清除）
+]
+
+
+def _on_nav_change() -> None:
+    """
+    ✅ 核心修法：
+    使用者點擊 sidebar 選單時，on_change 會在 re-run 最開始執行，
+    比頁面內容早 → 立即把新頁面寫入 current_menu，
+    並清除所有頁面 pending state，讓頁面內的 st.rerun() 無法蓋回舊值。
+    """
+    new_page = st.session_state.get("_sidebar_radio")
+    if new_page:
+        st.session_state["current_menu"] = new_page
+        logger.debug(f"🧭 導航切換 → {new_page}")
+
+    # 清除靜態 pending keys
+    for k in _PAGE_PENDING_KEYS:
+        if k in st.session_state:
+            del st.session_state[k]
+
+    # 動態清除 confirm_delete_{id} 格式的 key
+    to_del = [k for k in st.session_state if k.startswith("confirm_delete_")]
+    for k in to_del:
+        del st.session_state[k]
+
+
+# ============================================
+# 10. Main (Gatekeeper + Cookie Restore)
 # ============================================
 
 def main() -> None:
@@ -269,7 +299,7 @@ def main() -> None:
 
     if not session_manager.is_authenticated():
         if _try_restore_from_cookie():
-            pass  # 還原成功，直接往下執行
+            pass
         else:
             render_login_page()
             return
@@ -286,7 +316,7 @@ def main() -> None:
 
 
 # ============================================
-# 10. Login Page
+# 11. Login Page
 # ============================================
 
 def render_login_page() -> None:
@@ -306,7 +336,7 @@ def render_login_page() -> None:
 
 
 # ============================================
-# 11. Main App
+# 12. Main App
 # ============================================
 
 def render_main_app() -> None:
@@ -331,8 +361,7 @@ def render_sidebar(db_healthy: bool) -> None:
         st.divider()
         render_user_card()
         st.divider()
-        menu = render_menu()
-        st.session_state["current_menu"] = menu
+        render_menu()            # ✅ menu 值由 on_change 直接寫入 session_state
         render_system_status(db_healthy)
 
 
@@ -401,7 +430,13 @@ def handle_logout() -> None:
     st.rerun()
 
 
-def render_menu() -> str:
+def render_menu() -> None:
+    """
+    ✅ [FIX v15.2]
+    - key="_sidebar_radio"：獨立 key，不再與 current_menu 共用
+    - on_change=_on_nav_change：點擊瞬間寫入 current_menu 並清除 pending state
+    - index 從 current_menu 反查，確保 F5 刷新後選中位置正確
+    """
     user_role  = session_manager.get_user_role()
     menu_items = [
         "📊 儀表板",
@@ -416,15 +451,19 @@ def render_menu() -> str:
     if user_role == "admin":
         menu_items.extend(["⚙️ 系統設定", "👨‍💼 用戶管理"])
 
+    # current_menu 作為唯一真相來源
     current = st.session_state.get("current_menu", menu_items[0])
     if current not in menu_items:
         current = menu_items[0]
+        st.session_state["current_menu"] = current
 
-    return st.radio(
+    st.radio(
         "功能選單",
-        menu_items,
-        index=menu_items.index(current),
-        label_visibility="collapsed",
+        options    = menu_items,
+        index      = menu_items.index(current),
+        key        = "_sidebar_radio",       # ✅ 獨立 key，不覆蓋 current_menu
+        on_change  = _on_nav_change,         # ✅ 點擊立即生效，不被頁面 rerun 蓋掉
+        label_visibility = "collapsed",
     )
 
 
@@ -435,7 +474,6 @@ def render_system_status(db_healthy: bool) -> None:
             st.success("✅ 資料庫") if db_healthy else st.error("❌ 資料庫")
         with c2:
             env = APP_CONFIG["environment"]
-            # ✅ 不在 f-string 內嵌激活表達式，避免 Python 3.13 surrogate 錯誤
             env_icon = "🚀" if env == "production" else "🔧"
             st.info(f"{env_icon} {env.capitalize()}")
         st.caption(f"Version: {APP_CONFIG['version']}")
@@ -453,22 +491,23 @@ def render_system_status(db_healthy: bool) -> None:
 
 
 def render_main_content() -> None:
+    # ✅ 唯一真相來源：current_menu（由 on_change 寫入）
     menu = st.session_state.get("current_menu", "📊 儀表板")
     if not check_page_permission(menu):
         st.error("❌ 權限不足")
         return
 
     PAGE_MODULES = {
-        "📊 儀表板":       "dashboard",
-        "👥 房客管理":     "tenants",
-        "💰 租金管理":     "rent",
-        "📋 繳費追蹤":     "tracking",
-        "⚡ 電費管理":     "electricity",
-        "💸 支出記錄":     "expenses",
-        "📱 LINE 綁定":    "line_binding",
-        "📬 通知管理":     "notifications",
-        "⚙️ 系統設定":     "settings",
-        "👨‍💼 用戶管理":  "user_management",
+        "📊 儀表板":      "dashboard",
+        "👥 房客管理":    "tenants",
+        "💰 租金管理":    "rent",
+        "📋 繳費追蹤":    "tracking",
+        "⚡ 電費管理":    "electricity",
+        "💸 支出記錄":    "expenses",
+        "📱 LINE 綁定":   "line_binding",
+        "📬 通知管理":    "notifications",
+        "⚙️ 系統設定":    "settings",
+        "👨‍💼 用戶管理": "user_management",
     }
     page_module = PAGE_MODULES.get(menu)
     if not page_module:
@@ -493,7 +532,7 @@ def load_page_module(page_module: str) -> None:
         logger.error(f"載入模組失敗: {page_module} - {e}", exc_info=True)
         if APP_CONFIG["dev_mode"]:
             st.exception(e)
-        if st.button("🔙 返回儀表板"):
+        if st.button("🔙 返回儀表板", key="btn_back_import_err"):
             st.session_state["current_menu"] = "📊 儀表板"
             st.rerun()
     except Exception as e:
@@ -501,13 +540,13 @@ def load_page_module(page_module: str) -> None:
         logger.error(f"頁面渲染失敗: {page_module} - {e}", exc_info=True)
         if APP_CONFIG["dev_mode"]:
             st.exception(e)
-        if st.button("🔙 返回儀表板"):
+        if st.button("🔙 返回儀表板", key="btn_back_render_err"):
             st.session_state["current_menu"] = "📊 儀表板"
             st.rerun()
 
 
 # ============================================
-# 12. Entry Point
+# 13. Entry Point
 # ============================================
 
 if __name__ == "__main__":
