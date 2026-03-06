@@ -1,7 +1,14 @@
 """
-電費管理服務 - v4.5
-✅ v4.4 所有功能保留
-✅ [FIX v4.5] add_period 新增 remind_start_date 參數（建立時一併寫入）
+電費管理服務 - v5.0
+✅ v4.5 所有功能保留
+✅ [NEW v5.0] 電費預收帳戶 electricity_deposit_ledger
+    - 自動建表（首次實例化就建女待延所）
+    - add_deposit: 新增預收電費
+    - deduct_electricity: 從帳戶扣除電費
+    - get_deposit_ledger: 查詢流水帳（餘款用 Window Function 即時算）
+    - get_deposit_balance: 查詢當前餘款
+    - delete_deposit_entry: 刪除單筆記錄
+    - get_all_rooms_deposit_summary: 全房間餘款摘要
 """
 
 import pandas as pd
@@ -16,6 +23,276 @@ class ElectricityService(BaseDBService):
 
     def __init__(self):
         super().__init__()
+        self._init_deposit_ledger_table()
+
+    # ==================== 內部建表 ====================
+
+    def _init_deposit_ledger_table(self) -> None:
+        """首次實例化時自動建立 electricity_deposit_ledger 資料表"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS electricity_deposit_ledger (
+                        id          SERIAL PRIMARY KEY,
+                        room_number TEXT        NOT NULL,
+                        date        TEXT        NOT NULL,
+                        type        TEXT        NOT NULL
+                                    CHECK (type IN ('預收電費', '扣電費')),
+                        description TEXT,
+                        credit      NUMERIC(10,2) NOT NULL DEFAULT 0,
+                        debit       NUMERIC(10,2) NOT NULL DEFAULT 0,
+                        period_id   INTEGER
+                                    REFERENCES electricity_periods(id)
+                                    ON DELETE SET NULL,
+                        created_at  TIMESTAMP DEFAULT NOW()
+                    )
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_edl_room
+                    ON electricity_deposit_ledger(room_number)
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_edl_room_date
+                    ON electricity_deposit_ledger(room_number, date, id)
+                """)
+                conn.commit()
+                logger.info("✅ electricity_deposit_ledger 資料表檢查完成")
+        except Exception as e:
+            logger.error(f"❌ 建表失敗: {str(e)}")
+
+    # ==================== 預收電費帳戶 ====================
+
+    def add_deposit(
+        self,
+        room_number: str,
+        date_str:    str,
+        amount:      float,
+        description: str = "",
+    ) -> Tuple[bool, str, Optional[int]]:
+        """
+        新增預收電費
+        Args:
+            room_number: 房號
+            date_str:    日期 YYYY-MM-DD
+            amount:      預收金額（正數）
+            description: 說明，如 '預捥2B王程電費待扣款'
+        """
+        try:
+            if amount <= 0:
+                return False, "❌ 金額必須大於 0", None
+            datetime.strptime(date_str, "%Y-%m-%d")
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO electricity_deposit_ledger
+                        (room_number, date, type, description, credit, debit)
+                    VALUES (%s, %s, '預收電費', %s, %s, 0)
+                    RETURNING id
+                    """,
+                    (room_number, date_str, description, amount),
+                )
+                entry_id = cursor.fetchone()[0]
+                conn.commit()
+                log_db_operation("INSERT", "electricity_deposit_ledger", True, 1)
+                logger.info(f"✅ 預收電費: {room_number} +${amount:,.0f} ({date_str})")
+                return True, f"✅ 已新增預收 ${amount:,.0f} 元", entry_id
+
+        except ValueError:
+            return False, "❌ 日期格式錯誤，應為 YYYY-MM-DD", None
+        except Exception as e:
+            log_db_operation("INSERT", "electricity_deposit_ledger", False, error=str(e))
+            logger.error(f"❌ 新增失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}", None
+
+    def deduct_electricity(
+        self,
+        room_number: str,
+        date_str:    str,
+        amount:      float,
+        description: str = "",
+        period_id:   Optional[int] = None,
+    ) -> Tuple[bool, str, Optional[int]]:
+        """
+        從預收帳戶扣除電費
+        Args:
+            room_number: 房號
+            date_str:    日期 YYYY-MM-DD
+            amount:      扣除金額（正數）
+            description: 說明，如 '5-6月電費'
+            period_id:   關聯電費期間 ID（可不填）
+        """
+        try:
+            if amount <= 0:
+                return False, "❌ 金額必須大於 0", None
+            datetime.strptime(date_str, "%Y-%m-%d")
+
+            # 檢查餘款是否充足
+            balance = self.get_deposit_balance(room_number)
+            if balance < amount:
+                logger.warning(
+                    f"⚠️ {room_number} 餘款不足: 餘 ${balance:,.0f}，要扣 ${amount:,.0f}"
+                )
+                # 仅警告不阻擋，允許負餘款（套用你的 Excel 行為）
+
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO electricity_deposit_ledger
+                        (room_number, date, type, description, credit, debit, period_id)
+                    VALUES (%s, %s, '扣電費', %s, 0, %s, %s)
+                    RETURNING id
+                    """,
+                    (room_number, date_str, description, amount, period_id),
+                )
+                entry_id = cursor.fetchone()[0]
+                conn.commit()
+                log_db_operation("INSERT", "electricity_deposit_ledger", True, 1)
+                logger.info(
+                    f"✅ 扣電費: {room_number} -${amount:,.0f} "
+                    f"({date_str}) period={period_id}"
+                )
+                return True, f"✅ 已扣除 ${amount:,.0f} 元", entry_id
+
+        except ValueError:
+            return False, "❌ 日期格式錯誤，應為 YYYY-MM-DD", None
+        except Exception as e:
+            log_db_operation("INSERT", "electricity_deposit_ledger", False, error=str(e))
+            logger.error(f"❌ 扣除失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}", None
+
+    def get_deposit_balance(self, room_number: str) -> float:
+        """查詢指定房間的當前餘款"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT COALESCE(SUM(credit - debit), 0)
+                    FROM electricity_deposit_ledger
+                    WHERE room_number = %s
+                    """,
+                    (room_number,),
+                )
+                return float(cursor.fetchone()[0])
+        except Exception as e:
+            logger.error(f"❌ 查詢餘款失敗: {str(e)}")
+            return 0.0
+
+    def get_deposit_ledger(self, room_number: str) -> pd.DataFrame:
+        """
+        查詢指定房間的完整流水帳
+        餘款用 Window Function 即時計算，刪除記錄後不需重算
+        返回欄位: 日期, 類型, 說明, 預收電費, 扣電費, 餘款, 期間ID, id
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT
+                        id,
+                        date                                                    AS 日期,
+                        type                                                    AS 類型,
+                        COALESCE(description, '')                               AS 說明,
+                        CASE WHEN credit > 0 THEN credit ELSE NULL END          AS 預收電費,
+                        CASE WHEN debit  > 0 THEN debit  ELSE NULL END          AS 扣電費,
+                        SUM(credit - debit) OVER (
+                            PARTITION BY room_number
+                            ORDER BY date, id
+                            ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+                        )                                                       AS 餘款,
+                        period_id
+                    FROM electricity_deposit_ledger
+                    WHERE room_number = %s
+                    ORDER BY date, id
+                    """,
+                    (room_number,),
+                )
+                columns = [desc[0] for desc in cursor.description]
+                rows    = cursor.fetchall()
+                if not rows:
+                    return pd.DataFrame(
+                        columns=["id", "日期", "類型", "說明",
+                                  "預收電費", "扣電費", "餘款", "period_id"]
+                    )
+                df = pd.DataFrame(rows, columns=columns)
+                log_db_operation("SELECT", "electricity_deposit_ledger", True, len(df))
+                return df
+
+        except Exception as e:
+            log_db_operation("SELECT", "electricity_deposit_ledger", False, error=str(e))
+            logger.error(f"❌ 查詢流水帳失敗: {str(e)}")
+            return pd.DataFrame()
+
+    def delete_deposit_entry(self, entry_id: int) -> Tuple[bool, str]:
+        """刪除單筆記錄（Window Function 方案，刪除後餘款自動重算不需額外操作）"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT room_number, type, credit, debit "
+                    "FROM electricity_deposit_ledger WHERE id = %s",
+                    (entry_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return False, f"❌ 找不到 ID {entry_id} 的記錄"
+                room, t, credit, debit = row
+
+                cursor.execute(
+                    "DELETE FROM electricity_deposit_ledger WHERE id = %s",
+                    (entry_id,),
+                )
+                conn.commit()
+                log_db_operation("DELETE", "electricity_deposit_ledger", True, 1)
+                logger.info(
+                    f"✅ 刪除記錄 ID {entry_id}: {room} {t} "
+                    f"credit={credit} debit={debit}"
+                )
+                return True, f"✅ 已刪除 ({t} {'+ ' if credit else '- '}${max(credit, debit):,.0f})"
+
+        except Exception as e:
+            log_db_operation("DELETE", "electricity_deposit_ledger", False, error=str(e))
+            logger.error(f"❌ 刪除失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}"
+
+    def get_all_rooms_deposit_summary(self) -> pd.DataFrame:
+        """
+        全房間預收電費餘款摘要
+        返回: 房號, 預收總額, 扣除總額, 當前餘款, 最近一筆日期
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        l.room_number                   AS 房號,
+                        COALESCE(t.name, '')            AS 租客,
+                        SUM(l.credit)                   AS 預收總額,
+                        SUM(l.debit)                    AS 扣除總額,
+                        SUM(l.credit - l.debit)         AS 當前餘款,
+                        MAX(l.date)                     AS 最近一筆
+                    FROM electricity_deposit_ledger l
+                    LEFT JOIN tenants t ON l.room_number = t.room_number
+                    GROUP BY l.room_number, t.name
+                    ORDER BY l.room_number
+                """)
+                columns = [desc[0] for desc in cursor.description]
+                rows    = cursor.fetchall()
+                if not rows:
+                    return pd.DataFrame(
+                        columns=["房號", "租客", "預收總額",
+                                  "扣除總額", "當前餘款", "最近一筆"]
+                    )
+                return pd.DataFrame(rows, columns=columns)
+
+        except Exception as e:
+            logger.error(f"❌ 摘要失敗: {str(e)}")
+            return pd.DataFrame()
 
     # ==================== 期間管理 ====================
 
@@ -24,7 +301,7 @@ class ElectricityService(BaseDBService):
         year: int,
         month_start: int,
         month_end: int,
-        remind_start_date: Optional[str] = None,  # ✅ v4.5 新增
+        remind_start_date: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[int]]:
         """
         新增電費期間
@@ -337,7 +614,6 @@ class ElectricityService(BaseDBService):
                         amount_due       = EXCLUDED.amount_due,
                         room_type        = EXCLUDED.room_type,
                         updated_at       = NOW()
-                    -- ✅ 刻意不更新 payment_status / paid_amount / paid_at
                     """,
                     (
                         period_id, room, previous, current, kwh_used,
@@ -349,7 +625,7 @@ class ElectricityService(BaseDBService):
                 log_db_operation("INSERT", "electricity_readings", True, 1)
                 logger.info(
                     f"✅ {room} ({room_type}): {kwh_used}度 "
-                    f"+ {public_share_kwh}分攤 = {total_kwh}度 → ${amount_due}"
+                    f"+ {public_share_kwh}分擔 = {total_kwh}度 → ${amount_due}"
                 )
                 return True, f"✅ 已儲存 {room}"
 
@@ -444,7 +720,7 @@ class ElectricityService(BaseDBService):
                         er.previous_reading                                         AS 上期讀數,
                         er.current_reading                                          AS 本期讀數,
                         er.kwh_used                                                 AS 使用度數,
-                        COALESCE(er.public_share_kwh, 0)                            AS 公用分攤,
+                        COALESCE(er.public_share_kwh, 0)                            AS 公用分擔,
                         COALESCE(er.total_kwh, er.kwh_used)                         AS 總度數,
                         COALESCE(er.unit_price, 0)                                  AS 單價,
                         COALESCE(er.room_type, 'unknown')                           AS 類型,
