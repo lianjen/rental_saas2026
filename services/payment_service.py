@@ -1,5 +1,5 @@
 """
-租金管理服務 - v5.1 (UI 介面整合版 + Auth)
+租金管理服務 - v5.2 (rent_due_day 支援)
 ✅ 自動注入 user_id
 ✅ RLS Policy 兼容
 ✅ 認證權限檢查
@@ -10,8 +10,10 @@
 ✅ 提供給各租金管理頁面 (views.rent) 使用的高階查詢 API
 ✅ 向後兼容
 ✅ [FIX] create_monthly_schedule: rent_amount → rent, 移除不存在的 payment_method 欄位
+✅ [NEW] create_monthly_schedule: due_date 從 tenants.rent_due_day 讀取（預設 1 號，移除 hardcode 5）
 """
 
+import calendar
 import pandas as pd
 from datetime import date
 from typing import Optional, Tuple, List, Dict
@@ -539,6 +541,7 @@ class PaymentService(BaseDBService):
         """
         高階 API：依房號 + 年月，自動從 tenants 取資料建立租金排程
         ✅ [FIX] 欄位改為 rent（原 rent_amount），移除不存在的 payment_method
+        ✅ [NEW] due_date 從 tenants.rent_due_day 讀取，預設 1 號，移除 hardcode
         """
         try:
             user_id = self._get_current_user_id()
@@ -558,10 +561,10 @@ class PaymentService(BaseDBService):
                     tenant_conditions.append("user_id = %s")
                     tenant_params.append(user_id)
 
-                # ✅ 修正: rent_amount → rent，移除不存在的 payment_method
+                # ✅ [NEW] 加入 rent_due_day，COALESCE 確保舊資料不為 NULL
                 cursor.execute(
                     f"""
-                    SELECT name, rent
+                    SELECT name, rent, COALESCE(rent_due_day, 1) AS rent_due_day
                     FROM tenants
                     WHERE {' AND '.join(tenant_conditions)}
                     """,
@@ -573,8 +576,8 @@ class PaymentService(BaseDBService):
                     logger.warning(f"房間 {room_number} 無有效房客，略過")
                     return False, f"房間 {room_number} 無有效房客"
 
-                # ✅ 只解包 2 個欄位
-                tenant_name, rent_amount = tenant
+                # ✅ [NEW] 解包 3 個欄位
+                tenant_name, rent_amount, rent_due_day = tenant
 
                 # 檢查該年月是否已存在
                 check_conditions = [
@@ -597,9 +600,12 @@ class PaymentService(BaseDBService):
                     logger.info(f"{room_number} {year}/{month} 已存在，略過")
                     return True, f"{room_number} {year}/{month} 已存在"
 
-                # 設定預設到期日（5 號）
+                # ✅ [NEW] 從 rent_due_day 計算到期日，避免月底天數不足
                 try:
-                    due = date(year, month, 5)
+                    due_day = int(rent_due_day)
+                    last_day = calendar.monthrange(year, month)[1]
+                    due_day = min(due_day, last_day)   # 防止 2 月 29/30/31 出錯
+                    due = date(year, month, due_day)
                 except Exception:
                     due = None
 
@@ -615,7 +621,10 @@ class PaymentService(BaseDBService):
                 )
 
                 log_db_operation("INSERT", "payment_schedule (create_monthly)", True, 1)
-                logger.info(f"建立排程: {room_number} {year}/{month} 金額 {rent_amount:,.0f}")
+                logger.info(
+                    f"建立排程: {room_number} {year}/{month} "
+                    f"金額 {rent_amount:,.0f} 到期日 {due}"
+                )
                 return True, "新增成功"
 
         except Exception as e:
@@ -974,7 +983,6 @@ class PaymentService(BaseDBService):
 
                 log_db_operation("SELECT", "payment_schedule (statistics)", True, 1)
                 logger.info(f"統計: 繳款率 {payment_rate:.1f}% ({paid_count}/{total_count})")
-
                 return {
                     "total_amount": float(total_amount or 0),
                     "paid_amount": float(paid_amount or 0),
@@ -1147,7 +1155,7 @@ if __name__ == "__main__":
 
     service = PaymentService()
 
-    print("=== 測試租金服務 v5.1 (Auth) ===\n")
+    print("=== 測試租金服務 v5.2 (rent_due_day) ===\n")
 
     print("0. 認證狀態:")
     print(f"   已登入: {service.is_authenticated()}")
@@ -1163,8 +1171,8 @@ if __name__ == "__main__":
     overdue = service.get_overdue_payments()
     print(f"   {len(overdue)} 筆逾期\n")
 
-    print("3. 本月摘要 (2026/2):")
-    summary = service.get_monthly_summary(2026, 2)
+    print("3. 本月摘要 (2026/3):")
+    summary = service.get_monthly_summary(2026, 3)
     for key, value in summary.items():
         print(f"   {key}: {value}")
 
