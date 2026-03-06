@@ -3,7 +3,8 @@ UI 元件庫 - 統一視覺風格
 ✅ [FIX v1.1] data_table: use_container_width → width="stretch"
 ✅ [FIX v1.2] data_table: index 從 1 開始
 ✅ [NEW v1.3] room_status_card 加入 payment_cycle badge
-✅ [FIX v1.4] room_status_card 改為單行 HTML，避免 Markdown 緩衝區把多行 HTML 變成 code block
+✅ [FIX v1.4] 改為單行 HTML，避免 Markdown code block
+✅ [STYLE v1.5] badge 與月租同行顯示，放大字體
 """
 
 import streamlit as st
@@ -87,7 +88,7 @@ def room_status_card(
 ):
     """
     房間狀態卡片
-    ✅ [v1.4] 全部使用單行 HTML，避免 Streamlit Markdown 變成 code block
+    ✅ [v1.5] badge 與月租同行 + 放大
     """
     status_config = {
         'occupied': ('🟢', '已出租',   '#d4edda', '#155724'),
@@ -100,15 +101,20 @@ def room_status_card(
         c = _CYCLE_STYLE.get(payment_cycle or '月繳', {"bg": "#f5f5f5", "fg": "#757575", "icon": ""})
         label = payment_cycle or '月繳'
         rent_str = f"${int(rent):,}" if rent else "$0"
+
+        # badge 與月租同行：flex 排列，badge 字體 0.9rem， padding 放大
         badge = (
             f'<span style="background:{c["bg"]};color:{c["fg"]};'
-            f'padding:2px 8px;border-radius:10px;font-size:0.75rem;font-weight:600;">'
+            f'padding:3px 12px;border-radius:12px;'
+            f'font-size:0.9rem;font-weight:700;white-space:nowrap;">'
             f'{c["icon"]} {label}</span>'
         )
         body = (
             f'<div style="font-size:1rem;font-weight:500;margin:0.4rem 0;">{tenant_name}</div>'
-            f'<div style="font-size:0.9rem;color:#555;margin-bottom:0.3rem;">月租: <b>{rent_str}</b> 元</div>'
+            f'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:0.2rem;">'
+            f'<span style="font-size:0.95rem;color:#555;">月租: <b>{rent_str}</b> 元</span>'
             f'{badge}'
+            f'</div>'
         )
     else:
         body = '<div style="color:#999;font-style:italic;">待出租</div>'
