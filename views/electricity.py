@@ -1,9 +1,9 @@
 """
-電費管理 - v5.0
-✅ v4.9 所有功能保留
-✅ [NEW v5.0] 新增 Tab 5：💰 電費預收帳
-✅ [NEW v5.0] 全房間餘額總覽
-✅ [NEW v5.0] 單房流水帳查詢 / 新增預收 / 扣電費 / 刪除錯帳
+電費管理 - v5.1
+✅ v5.0 所有功能保留
+✅ [FIX v5.1] _to_date_safe()：相容 Supabase 回傳 datetime.date / str / None
+✅ [FIX v5.1] render_period_tab: date_input value 不再 strptime crash
+✅ [FIX v5.1] render_calculation_tab: days_left 計算不再 strptime crash
 """
 
 import logging
@@ -124,6 +124,22 @@ def _get_selected_period_default_index(
         return 0
     values = list(period_options.values())
     return values.index(default_period_id) if default_period_id in values else 0
+
+
+# ✅ [FIX v5.1] 統一轉換 remind_start_date：相容 str / datetime.date / None
+def _to_date_safe(v) -> Optional[date]:
+    """
+    Supabase 可能回傳 str("2026-04-01") 或 datetime.date(2026,4,1) 或 None。
+    統一轉成 datetime.date，避免 strptime() crash。
+    """
+    if v is None:
+        return None
+    if isinstance(v, date):
+        return v
+    try:
+        return datetime.strptime(str(v), "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 # ============================================================
@@ -322,12 +338,11 @@ def render_period_tab(elec_service: ElectricityService):
 
     col_d, col_b = st.columns([3, 1])
     with col_d:
+        # ✅ [FIX v5.1] 使用 _to_date_safe() 相容 str / datetime.date / None
+        remind_default = _to_date_safe(current_remind_date) or date.today()
         new_remind_date = st.date_input(
             "設定催繳開始日",
-            value=(
-                datetime.strptime(current_remind_date, "%Y-%m-%d").date()
-                if current_remind_date else date.today()
-            ),
+            value=remind_default,
             key="remind_date_input",
         )
     with col_b:
@@ -678,16 +693,21 @@ def render_calculation_tab(
 
     elif notify_mode == "自動發送":
         period_info = elec_service.get_period_by_id(period_id)
-        remind_date = period_info.get("remind_start_date") if period_info else None
+        remind_date_raw = period_info.get("remind_start_date") if period_info else None
 
-        if not remind_date:
+        if not remind_date_raw:
             st.error("❌ 請先設定催繳日期")
         else:
-            days_left = (datetime.strptime(remind_date, "%Y-%m-%d") - datetime.now()).days
-            if days_left <= 0:
-                st.success(f"✅ 催繳日期已到（{remind_date}）")
+            # ✅ [FIX v5.1] 使用 _to_date_safe() 相容 str / datetime.date
+            remind_date_obj = _to_date_safe(remind_date_raw)
+            if remind_date_obj:
+                days_left = (remind_date_obj - date.today()).days
+                if days_left <= 0:
+                    st.success(f"✅ 催繳日期已到（{remind_date_obj}）")
+                else:
+                    st.info(f"⏳ 催繳日期: {remind_date_obj}（還有 {days_left} 天）")
             else:
-                st.info(f"⏳ 催繳日期: {remind_date}（還有 {days_left} 天）")
+                st.warning("⚠️ 催繳日期格式無法解析，請重新設定")
 
     st.divider()
     csv = details_df.to_csv(index=False, encoding="utf-8-sig")
