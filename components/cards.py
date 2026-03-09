@@ -5,6 +5,7 @@ UI 元件庫 - 統一視覺風格
 ✅ [NEW v1.3] room_status_card 加入 payment_cycle badge
 ✅ [FIX v1.4] 改為單行 HTML，避免 Markdown code block
 ✅ [STYLE v1.5] badge 與月租同行顯示，放大字體
+✅ [STYLE v1.6] 半年繳 badge 改為黃色
 """
 
 import streamlit as st
@@ -71,10 +72,10 @@ def info_card(title: str, content: str, icon: str = "ℹ️", type: str = "info"
     )
 
 
-# ── 繳費方式 badge 設定 ─────────────────────────────────
+# ── 繳費方式 badge 設定 ──────────────────────────────────────────────
 _CYCLE_STYLE = {
     "月繳":  {"bg": "#e3f2fd", "fg": "#1565c0", "icon": "📅"},
-    "半年繳": {"bg": "#e8f5e9", "fg": "#2e7d32", "icon": "📆"},
+    "半年繳": {"bg": "#fff8e1", "fg": "#f9a825", "icon": "📆"},  # ✅ [v1.6] 黃色
     "年繳":  {"bg": "#f3e5f5", "fg": "#6a1b9a", "icon": "🏷️"},
 }
 
@@ -89,6 +90,7 @@ def room_status_card(
     """
     房間狀態卡片
     ✅ [v1.5] badge 與月租同行 + 放大
+    ✅ [v1.6] 半年繳 badge 黃色
     """
     status_config = {
         'occupied': ('🟢', '已出租',   '#d4edda', '#155724'),
