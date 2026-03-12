@@ -1,11 +1,11 @@
 """
-統一通知服務 - v4.6 (schema 對齊修正版)
-✅ v4.5 所有功能保留
-✅ [FIX v4.6] get_setting / get_all_settings / save_setting / delete_setting:
-   - 欄位名統一為 "key" / "value" (PostgreSQL 保留字加雙引號)
-   - 對齊 system_service.py 的實際 schema
-   - 移除不存在的 is_active 筌選條件
-   - save_setting ON CONFLICT 改用 ("key") 唯一索引
+統一通知服務 - v4.7 (transaction isolation 修正版)
+✅ v4.6 所有功能保留
+✅ [FIX v4.7] send_electricity_bill_notification 拆成三層獨立 connection:
+   1. UPDATE electricity_periods (獨立 conn，失敗只 warning 不中斷)
+   2. SELECT 待通知名單 (獨立 conn)
+   3. 每筆 INSERT notification_logs (獨立 conn)
+   → 根治 "current transaction is aborted" 連鎖失敗
 """
 
 import os
@@ -71,8 +71,7 @@ class NotificationService(BaseDBService):
         return None
 
     # ──────────────────────────────────────────
-    # ✅ [FIX v4.6] 系統設定管理
-    #   欄位: "key" / "value" (與 system_service.py 一致)
+    # 系統設定管理 (欄位: "key" / "value")
     # ──────────────────────────────────────────
 
     def get_all_settings(self) -> Dict[str, str]:
@@ -258,7 +257,44 @@ class NotificationService(BaseDBService):
             return False
 
     # ──────────────────────────────────────────
-    # 電費通知
+    # 私有工具：寫入單筆 notification_log（獨立 conn）
+    # ──────────────────────────────────────────
+
+    def _write_notification_log(
+        self,
+        category: str,
+        recipient_type: str,
+        recipient_id: str,
+        room_number: str,
+        notification_type: str,
+        title: str,
+        message: str,
+        channel: str,
+        status: str,
+        error_message: Optional[str],
+        meta_json: str,
+    ) -> None:
+        """每筆 log 用獨立 connection 寫入，確保不受外層 transaction 狀態影響"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO notification_logs
+                    (category, recipient_type, recipient_id, room_number,
+                     notification_type, title, message, channel, status,
+                     sent_at, error_message, meta_json)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s::jsonb)
+                    """,
+                    (category, recipient_type, recipient_id, room_number,
+                     notification_type, title, message, channel,
+                     status, error_message, meta_json),
+                )
+        except Exception as e:
+            logger.error(f"❌ _write_notification_log 失敗: {e}")
+
+    # ──────────────────────────────────────────
+    # 電費通知 (v4.7 三層獨立 connection)
     # ──────────────────────────────────────────
 
     def send_electricity_bill_notification(
@@ -266,21 +302,29 @@ class NotificationService(BaseDBService):
         period_id: int,
         remind_date: Optional[str] = None
     ) -> Tuple[bool, str, int]:
-        try:
-            if not remind_date:
-                today = datetime.now()
-                next_month = today.month + 1 if today.month < 12 else 1
-                next_year = today.year if today.month < 12 else today.year + 1
-                remind_date = f"{next_year:04d}-{next_month:02d}-01"
+        # ── 預設催繳日期 ──────────────────────────
+        if not remind_date:
+            today = datetime.now()
+            next_month = today.month + 1 if today.month < 12 else 1
+            next_year = today.year if today.month < 12 else today.year + 1
+            remind_date = f"{next_year:04d}-{next_month:02d}-01"
 
+        # ── Step 1: UPDATE electricity_periods（獨立 conn，失敗不中斷） ──
+        try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
-
                 cursor.execute(
                     "UPDATE electricity_periods SET remind_start_date = %s WHERE id = %s",
                     (remind_date, period_id),
                 )
+            logger.info(f"✅ 已更新催繳日期: period_id={period_id}, date={remind_date}")
+        except Exception as e:
+            logger.warning(f"⚠️ 更新 remind_start_date 失敗 (不中斷流程): {e}")
 
+        # ── Step 2: SELECT 待通知名單（獨立 conn） ────────────────────
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
                 cursor.execute(
                     """
                     SELECT
@@ -301,113 +345,80 @@ class NotificationService(BaseDBService):
                     """,
                     (period_id,),
                 )
-
                 records = cursor.fetchall()
-                notified_count = 0
-                failed_count = 0
-
-                if not records:
-                    logger.info("📭 沒有需要通知的租客（無已驗證綁定）")
-                    return True, "📭 沒有需要通知的租客（無已驗證綁定）", 0
-
-                logger.info(f"🔍 找到 {len(records)} 筆需要發送電費通知")
-
-                for record in records:
-                    (
-                        er_id, room, amount, tenant_id, tenant_name,
-                        line_id, _notify_elec, _is_verified,
-                        year, month_start, month_end,
-                    ) = record
-                    period_text = f"{year}/{month_start}-{month_end}"
-
-                    try:
-                        msg_body = (
-                            f"⚡ 電費帳單通知\n\n"
-                            f"房號：{room}\n租客：{tenant_name}\n"
-                            f"期間：{period_text}\n金額：NT${amount:,}\n\n"
-                            f"請於 7 天內完成繳費。\n如有疑問，請聯繫房東。"
-                        )
-                        ok = self.send_line_message(line_id, msg_body)
-                        meta_json = json.dumps({
-                            "period_id": period_id, "electricity_reading_id": er_id,
-                            "amount": float(amount), "period_text": period_text,
-                            "tenant_id": tenant_id, "tenant_name": tenant_name,
-                        }, ensure_ascii=False)
-
-                        if ok:
-                            try:
-                                cursor.execute(
-                                    "UPDATE electricity_readings SET last_notified_at = NOW() WHERE id = %s",
-                                    (er_id,))
-                            except Exception:
-                                pass
-                            cursor.execute(
-                                """
-                                INSERT INTO notification_logs
-                                (category, recipient_type, recipient_id, room_number,
-                                 notification_type, title, message, channel, status,
-                                 sent_at, meta_json)
-                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
-                                """,
-                                ('electricity','tenant',line_id,room,'first_bill',
-                                 f'{period_text} 電費帳單',msg_body,'line','sent',meta_json),
-                            )
-                            notified_count += 1
-                            logger.info(f"✅ 發送電費通知: {room} ({tenant_name})")
-                        else:
-                            cursor.execute(
-                                """
-                                INSERT INTO notification_logs
-                                (category, recipient_type, recipient_id, room_number,
-                                 notification_type, title, message, channel, status,
-                                 error_message, created_at, meta_json)
-                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
-                                """,
-                                ('electricity','tenant',line_id,room,'first_bill',
-                                 f'{period_text} 電費帳單',msg_body,'line','failed',
-                                 'LINE API 回應失敗',meta_json),
-                            )
-                            failed_count += 1
-                            logger.warning(f"⚠️ 發送失敗: {room} ({tenant_name})")
-
-                    except Exception as e:
-                        failed_count += 1
-                        logger.error(f"❌ 發送失敗 {room}: {e}")
-                        try:
-                            meta_json = json.dumps({
-                                "period_id": period_id, "electricity_reading_id": er_id,
-                                "amount": float(amount) if amount else 0,
-                                "period_text": period_text, "tenant_id": tenant_id,
-                                "tenant_name": tenant_name, "error": str(e)[:500],
-                            }, ensure_ascii=False)
-                            cursor.execute(
-                                """
-                                INSERT INTO notification_logs
-                                (category, recipient_type, recipient_id, room_number,
-                                 notification_type, title, channel, status,
-                                 error_message, created_at, meta_json)
-                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
-                                """,
-                                ('electricity','tenant',line_id or 'unknown',room,'first_bill',
-                                 f'{period_text} 電費帳單','line','failed',str(e)[:500],meta_json),
-                            )
-                        except Exception as log_err:
-                            logger.error(f"❌ 寫入失敗日誌失敗: {log_err}")
-                        continue
-
-                log_db_operation("NOTIFICATION", "electricity_readings", True, notified_count)
-                summary = f"✅ 電費通知完成: 成功 {notified_count} 位"
-                if failed_count > 0:
-                    summary += f", 失敗 {failed_count} 位"
-                logger.info(f"{summary}，催繳日期設為 {remind_date}")
-                return True, summary, notified_count
-
         except Exception as e:
-            log_db_operation("NOTIFICATION", "electricity_readings", False, error=str(e))
-            logger.error(f"❌ 電費通知失敗: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False, f"❌ 電費通知失敗: {str(e)[:100]}", 0
+            logger.error(f"❌ 查詢待通知名單失敗: {e}")
+            return False, f"❌ 查詢待通知名單失敗: {str(e)[:100]}", 0
+
+        if not records:
+            logger.info("📭 沒有需要通知的租客（無已驗證綁定）")
+            return True, "📭 沒有需要通知的租客（無已驗證綁定）", 0
+
+        logger.info(f"🔍 找到 {len(records)} 筆需要發送電費通知")
+
+        # ── Step 3: 逐筆發送，每筆 log 用獨立 conn ────────────────────
+        notified_count = 0
+        failed_count = 0
+
+        for record in records:
+            (
+                er_id, room, amount, tenant_id, tenant_name,
+                line_id, _notify_elec, _is_verified,
+                year, month_start, month_end,
+            ) = record
+            period_text = f"{year}/{month_start}-{month_end}"
+
+            msg_body = (
+                f"⚡ 電費帳單通知\n\n"
+                f"房號：{room}\n租客：{tenant_name}\n"
+                f"期間：{period_text}\n金額：NT${amount:,}\n\n"
+                f"請於 7 天內完成繳費。\n如有疑問，請聯繫房東。"
+            )
+            meta_json = json.dumps({
+                "period_id": period_id, "electricity_reading_id": er_id,
+                "amount": float(amount) if amount else 0,
+                "period_text": period_text,
+                "tenant_id": tenant_id, "tenant_name": tenant_name,
+            }, ensure_ascii=False)
+
+            # 發送 LINE
+            ok = self.send_line_message(line_id, msg_body)
+
+            if ok:
+                notified_count += 1
+                logger.info(f"✅ 發送電費通知: {room} ({tenant_name})")
+                # 更新 last_notified_at（獨立 conn，失敗不影響 log）
+                try:
+                    with self.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE electricity_readings SET last_notified_at = NOW() WHERE id = %s",
+                            (er_id,)
+                        )
+                except Exception as e:
+                    logger.warning(f"⚠️ 更新 last_notified_at 失敗: {e}")
+                # 寫入成功 log（獨立 conn）
+                self._write_notification_log(
+                    'electricity', 'tenant', line_id, room,
+                    'first_bill', f'{period_text} 電費帳單',
+                    msg_body, 'line', 'sent', None, meta_json,
+                )
+            else:
+                failed_count += 1
+                logger.warning(f"⚠️ 發送失敗: {room} ({tenant_name})")
+                # 寫入失敗 log（獨立 conn）
+                self._write_notification_log(
+                    'electricity', 'tenant', line_id or 'unknown', room,
+                    'first_bill', f'{period_text} 電費帳單',
+                    msg_body, 'line', 'failed', 'LINE API 回應失敗', meta_json,
+                )
+
+        log_db_operation("NOTIFICATION", "electricity_readings", True, notified_count)
+        summary = f"✅ 電費通知完成: 成功 {notified_count} 位"
+        if failed_count > 0:
+            summary += f", 失敗 {failed_count} 位"
+        logger.info(f"{summary}，催繳日期設為 {remind_date}")
+        return True, summary, notified_count
 
     # ──────────────────────────────────────────
     # 租金催繳通知
@@ -476,34 +487,30 @@ class NotificationService(BaseDBService):
                 }
                 message = messages.get(reminder_stage, messages["first"])
 
-                ok = self.send_line_message(line_id, message)
-                meta_json = json.dumps({
-                    "payment_id": payment_id, "amount": float(amount),
-                    "due_date": str(due_date), "year": year, "month": month,
-                    "tenant_id": tenant_id, "tenant_name": tenant_name,
-                    "reminder_stage": reminder_stage, "overdue_days": max(0, overdue_days),
-                }, ensure_ascii=False)
+            # SELECT 完畢，conn 已關閉，以下用獨立 conn 發送 + log
+            ok = self.send_line_message(line_id, message)
+            meta_json = json.dumps({
+                "payment_id": payment_id, "amount": float(amount),
+                "due_date": str(due_date), "year": year, "month": month,
+                "tenant_id": tenant_id, "tenant_name": tenant_name,
+                "reminder_stage": reminder_stage, "overdue_days": max(0, overdue_days),
+            }, ensure_ascii=False)
 
-                cursor.execute(
-                    """
-                    INSERT INTO notification_logs
-                    (category, recipient_type, recipient_id, room_number,
-                     notification_type, title, message, channel, status,
-                     sent_at, error_message, meta_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s::jsonb)
-                    """,
-                    ('rent','tenant',line_id,room,f'{reminder_stage}_reminder',
-                     f'{year}/{month} 租金提醒',message,'line',
-                     'sent' if ok else 'failed',
-                     None if ok else 'LINE API 回應失敗',meta_json),
-                )
+            self._write_notification_log(
+                'rent', 'tenant', line_id, room,
+                f'{reminder_stage}_reminder', f'{year}/{month} 租金提醒',
+                message, 'line',
+                'sent' if ok else 'failed',
+                None if ok else 'LINE API 回應失敗',
+                meta_json,
+            )
 
-                if ok:
-                    log_db_operation("NOTIFICATION", "payment_schedule", True, 1)
-                    return True, f"✅ 已發送 {reminder_stage} 階段催繳"
-                else:
-                    log_db_operation("NOTIFICATION", "payment_schedule", False, error="LINE API 失敗")
-                    return False, "❌ LINE 發送失敗"
+            if ok:
+                log_db_operation("NOTIFICATION", "payment_schedule", True, 1)
+                return True, f"✅ 已發送 {reminder_stage} 階段催繳"
+            else:
+                log_db_operation("NOTIFICATION", "payment_schedule", False, error="LINE API 失敗")
+                return False, "❌ LINE 發送失敗"
 
         except Exception as e:
             log_db_operation("NOTIFICATION", "payment_schedule", False, error=str(e))
@@ -557,21 +564,14 @@ class NotificationService(BaseDBService):
             else:
                 error_msg = f"不支援的通道: {channel}"
 
-            with self.get_connection() as conn:
-                cursor = conn.cursor()
-                meta_json = json.dumps(meta_data or {}, ensure_ascii=False)
-                cursor.execute(
-                    """
-                    INSERT INTO notification_logs
-                    (category, recipient_type, recipient_id, room_number,
-                     notification_type, title, message, channel, status,
-                     sent_at, error_message, meta_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s::jsonb)
-                    """,
-                    (category, recipient_type, recipient_id, room_number,
-                     'custom', title, message, channel,
-                     'sent' if success else 'failed', error_msg, meta_json),
-                )
+            meta_json = json.dumps(meta_data or {}, ensure_ascii=False)
+            self._write_notification_log(
+                category, recipient_type, recipient_id, room_number,
+                'custom', title, message, channel,
+                'sent' if success else 'failed',
+                error_msg, meta_json,
+            )
+
             if success:
                 log_db_operation("NOTIFICATION", "custom", True, 1)
                 return True, "✅ 發送成功"
