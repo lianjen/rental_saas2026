@@ -1,4 +1,3 @@
-views/electricity.py
 """
 電費管理 - v5.1
 ✅ v5.0 所有功能保留
