@@ -5,6 +5,7 @@
 ✅ [FIX v5.3-B] 各樓層 expander 增加公用電度數、單價、差異 metric
 ✅ [FIX v5.3-C] 1F 公用電計算：台電度數 > 房間讀數時，差額顯示於摘要
 ✅ [FIX v5.3-D] floor_summaries 補上 public_kwh 欄位，避免 KeyError
+✅ [FIX v5.3-E] plotly_chart use_container_width → width='stretch' (Streamlit deprecation)
 """
 
 import logging
@@ -1010,7 +1011,8 @@ def render_statistics_tab(elec_service: ElectricityService):
             ),
             bargap=0.35,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        # [FIX v5.3-E] use_container_width → width='stretch'
+        st.plotly_chart(fig, width="stretch")
 
     else:
         col_b, col_l = st.columns(2)
@@ -1091,7 +1093,8 @@ def render_statistics_tab(elec_service: ElectricityService):
                 bargap=0.15,
                 bargroupgap=0.05,
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            # [FIX v5.3-E] use_container_width → width='stretch'
+            st.plotly_chart(fig2, width="stretch")
 
         else:
             pivot = rt.pivot_table(
