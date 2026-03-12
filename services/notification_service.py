@@ -1,12 +1,11 @@
 """
-統一通知服務 - v4.4 (electricity_records → electricity_readings 修正版)
-✅ v4.3 所有功能保留
-✅ [FIX v4.4] send_electricity_bill_notification:
-   - FROM electricity_records → FROM electricity_readings
-   - JOIN 欄位 er.period_id 實際存在於 electricity_readings
-   - er.amount_due 對應 electricity_readings.amount_due
-   - er.tenant_id 改由 room_number JOIN tenants
-   - er.status = 'unpaid' → er.payment_status = 'unpaid'
+統一通知服務 - v4.5 (LINE Token DB Fallback 修正版)
+✅ v4.4 所有功能保留
+✅ [FIX v4.5] __init__ 三層讀取 LINE_CHANNEL_ACCESS_TOKEN:
+   1. os.environ
+   2. st.secrets
+   3. system_settings 資料表 (通知管理頁面儲存的值)
+✅ send_line_message 改為 lazy-load token，每次發送前重新確認
 """
 
 import os
@@ -14,7 +13,7 @@ import json
 import requests
 import streamlit as st
 from typing import Optional, Dict, Tuple, List
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from services.base_db import BaseDBService
 from services.logger import logger, log_db_operation
@@ -22,19 +21,71 @@ from services.logger import logger, log_db_operation
 
 class NotificationService(BaseDBService):
     """統一通知服務 (繼承 BaseDBService)"""
-    
+
     def __init__(self):
         super().__init__()
-        
-        # LINE 設定
-        self.line_token = os.environ.get('LINE_CHANNEL_ACCESS_TOKEN') or \
-                         st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN")
-        
-        if not self.line_token:
-            logger.warning("⚠️ 未設定 LINE_CHANNEL_ACCESS_TOKEN，LINE 通知功能將無法使用")
-    
-    # ============= 系統設定管理 =============
-    
+        self.line_token = self._load_line_token()
+
+    # ──────────────────────────────────────────
+    # Token 載入（三層 fallback）
+    # ──────────────────────────────────────────
+
+    def _load_line_token(self) -> Optional[str]:
+        """
+        依序嘗試三個來源讀取 LINE Channel Access Token：
+        1. 環境變數 LINE_CHANNEL_ACCESS_TOKEN
+        2. Streamlit Secrets
+        3. system_settings 資料表 (key = line_channel_access_token)
+        """
+        # 1. 環境變數
+        token = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
+        if token:
+            logger.info("✅ LINE Token 來源: 環境變數")
+            return token
+
+        # 2. Streamlit Secrets
+        try:
+            token = st.secrets.get("LINE_CHANNEL_ACCESS_TOKEN")
+            if token:
+                logger.info("✅ LINE Token 來源: st.secrets")
+                return token
+        except Exception:
+            pass
+
+        # 3. DB system_settings
+        try:
+            token = self.get_setting("line_channel_access_token")
+            if token:
+                logger.info("✅ LINE Token 來源: system_settings DB")
+                return token
+        except Exception as e:
+            logger.warning(f"⚠️ 讀取 DB LINE Token 失敗: {e}")
+
+        logger.warning("⚠️ 未設定 LINE_CHANNEL_ACCESS_TOKEN，LINE 通知功能將無法使用")
+        return None
+
+    def _get_line_token(self) -> Optional[str]:
+        """
+        發送前 lazy-load：若 self.line_token 為空，再嘗試從 DB 補讀。
+        避免 __init__ 時 DB 尚未就緒但後來已設定的情況。
+        """
+        if self.line_token:
+            return self.line_token
+        # 重新嘗試 DB
+        try:
+            token = self.get_setting("line_channel_access_token")
+            if token:
+                self.line_token = token
+                logger.info("✅ LINE Token lazy-load 成功 (DB)")
+                return token
+        except Exception:
+            pass
+        return None
+
+    # ──────────────────────────────────────────
+    # 系統設定管理
+    # ──────────────────────────────────────────
+
     def get_all_settings(self) -> Dict[str, str]:
         try:
             with self.get_connection() as conn:
@@ -53,7 +104,7 @@ class NotificationService(BaseDBService):
             log_db_operation("SELECT", "system_settings", False, error=str(e))
             logger.error(f"❌ 載入系統設定失敗: {str(e)}")
             return {}
-    
+
     def get_setting(self, key: str, default: Optional[str] = None) -> Optional[str]:
         try:
             with self.get_connection() as conn:
@@ -74,28 +125,32 @@ class NotificationService(BaseDBService):
             log_db_operation("SELECT", "system_settings", False, error=str(e))
             logger.error(f"❌ 讀取設定失敗 ({key}): {str(e)}")
             return default
-    
+
     def save_setting(self, key: str, value: str) -> Tuple[bool, str]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO system_settings 
+                    INSERT INTO system_settings
                     (setting_key, setting_value, updated_at)
                     VALUES (%s, %s, NOW())
                     ON CONFLICT (setting_key)
-                    DO UPDATE SET 
+                    DO UPDATE SET
                         setting_value = EXCLUDED.setting_value,
                         updated_at = NOW()
                 """, (key, value))
                 log_db_operation("UPSERT", "system_settings", True, 1)
                 logger.info(f"✅ 儲存設定: {key} = {value[:50]}...")
+                # 若儲存的是 LINE Token，同步更新 self.line_token
+                if key == "line_channel_access_token" and value:
+                    self.line_token = value
+                    logger.info("✅ 同步更新記憶體中的 LINE Token")
                 return True, f"✅ 設定 {key} 已儲存"
         except Exception as e:
             log_db_operation("UPSERT", "system_settings", False, error=str(e))
             logger.error(f"❌ 儲存設定失敗 ({key}): {str(e)}")
             return False, f"❌ 儲存失敗: {str(e)[:100]}"
-    
+
     def delete_setting(self, key: str) -> Tuple[bool, str]:
         try:
             with self.get_connection() as conn:
@@ -112,15 +167,17 @@ class NotificationService(BaseDBService):
             log_db_operation("UPDATE", "system_settings", False, error=str(e))
             logger.error(f"❌ 刪除設定失敗 ({key}): {str(e)}")
             return False, f"❌ 刪除失敗: {str(e)[:100]}"
-    
-    # ============= 通知記錄查詢 =============
-    
+
+    # ──────────────────────────────────────────
+    # 通知記錄查詢
+    # ──────────────────────────────────────────
+
     def get_recent_notifications(self, limit: int = 10) -> List[Dict]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    SELECT 
+                    SELECT
                         id, category, recipient_type, room_number,
                         notification_type, title, channel, status,
                         sent_at, created_at, error_message
@@ -136,7 +193,7 @@ class NotificationService(BaseDBService):
             log_db_operation("SELECT", "notification_logs", False, error=str(e))
             logger.error(f"❌ 查詢最近通知失敗: {str(e)}")
             return []
-    
+
     def get_notification_logs(
         self,
         days: int = 7,
@@ -161,7 +218,7 @@ class NotificationService(BaseDBService):
                     params.append(category)
                 params.append(limit)
                 query = f"""
-                    SELECT 
+                    SELECT
                         id, category, recipient_type, recipient_id, room_number,
                         notification_type, title, message, channel, status,
                         sent_at, created_at, error_message, meta_json
@@ -180,29 +237,29 @@ class NotificationService(BaseDBService):
             log_db_operation("SELECT", "notification_logs", False, error=str(e))
             logger.error(f"❌ 查詢通知日誌失敗: {str(e)}")
             return []
-    
-    # ============= 核心發送方法 =============
-    
+
+    # ──────────────────────────────────────────
+    # 核心發送方法
+    # ──────────────────────────────────────────
+
     def send_line_message(self, user_id: str, message: str) -> bool:
-        if not self.line_token:
+        # ✅ [FIX v4.5] lazy-load token，每次發送前確認
+        token = self._get_line_token()
+        if not token:
             logger.warning("⚠️ 未設定 LINE_CHANNEL_ACCESS_TOKEN")
             return False
         if not user_id:
             logger.warning("⚠️ LINE User ID 為空")
             return False
         try:
-            payload = {
-                'to': user_id,
-                'messages': [{'type': 'text', 'text': message}]
-            }
             response = requests.post(
-                'https://api.line.me/v2/bot/message/push',
+                "https://api.line.me/v2/bot/message/push",
                 headers={
-                    'Content-Type': 'application/json',
-                    'Authorization': f'Bearer {self.line_token}'
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {token}",
                 },
-                json=payload,
-                timeout=10
+                json={"to": user_id, "messages": [{"type": "text", "text": message}]},
+                timeout=10,
             )
             if response.status_code == 200:
                 logger.info(f"✅ LINE 發送成功: {user_id}")
@@ -216,9 +273,11 @@ class NotificationService(BaseDBService):
         except Exception as e:
             logger.error(f"❌ LINE 發送失敗: {e}")
             return False
-    
-    # ============= 電費通知 =============
-    
+
+    # ──────────────────────────────────────────
+    # 電費通知
+    # ──────────────────────────────────────────
+
     def send_electricity_bill_notification(
         self,
         period_id: int,
@@ -227,17 +286,10 @@ class NotificationService(BaseDBService):
         """
         發送電費帳單通知 + 寫入 notification_logs
 
-        ✅ [FIX v4.4]
-          - 資料表改用 electricity_readings (原 electricity_records 不存在)
-          - tenant_id 從 electricity_readings 不存在 → 改由 room_number JOIN tenants
-          - payment_status 欄位：若資料表無此欄則不篩選狀態（安全 fallback）
+        ✅ [v4.4] FROM electricity_readings (原 electricity_records 不存在)
+        ✅ [v4.5] send_line_message 使用 lazy-load token
 
-        Args:
-            period_id: 期間 ID
-            remind_date: 催繳開始日期 (可選，默認下月 1 號)
-
-        Returns:
-            (bool, str, notified_count)
+        Returns: (bool, str, notified_count)
         """
         try:
             if not remind_date:
@@ -249,19 +301,11 @@ class NotificationService(BaseDBService):
             with self.get_connection() as conn:
                 cursor = conn.cursor()
 
-                # 1. 更新催繳日期
                 cursor.execute(
-                    """
-                    UPDATE electricity_periods
-                    SET remind_start_date = %s
-                    WHERE id = %s
-                    """,
-                    (remind_date, period_id)
+                    "UPDATE electricity_periods SET remind_start_date = %s WHERE id = %s",
+                    (remind_date, period_id),
                 )
 
-                # 2. ✅ [FIX v4.4] 改用 electricity_readings
-                #    - er.room_number JOIN tenants t ON er.room_number = t.room_number
-                #    - er.period_id 確實存在於 electricity_readings
                 cursor.execute(
                     """
                     SELECT
@@ -287,7 +331,7 @@ class NotificationService(BaseDBService):
                         AND tc.notify_electricity = true
                         AND COALESCE(tc.is_verified, false) = true
                     """,
-                    (period_id,)
+                    (period_id,),
                 )
 
                 records = cursor.fetchall()
@@ -302,32 +346,24 @@ class NotificationService(BaseDBService):
 
                 for record in records:
                     (
-                        er_id,
-                        room,
-                        amount,
-                        tenant_id,
-                        tenant_name,
-                        line_id,
-                        _notify_elec,
-                        _is_verified,
-                        year,
-                        month_start,
-                        month_end,
+                        er_id, room, amount, tenant_id, tenant_name,
+                        line_id, _notify_elec, _is_verified,
+                        year, month_start, month_end,
                     ) = record
                     period_text = f"{year}/{month_start}-{month_end}"
 
                     try:
-                        message = f"""⚡ 電費帳單通知
+                        msg_body = (
+                            f"⚡ 電費帳單通知\n\n"
+                            f"房號：{room}\n"
+                            f"租客：{tenant_name}\n"
+                            f"期間：{period_text}\n"
+                            f"金額：NT${amount:,}\n\n"
+                            f"請於 7 天內完成繳費。\n"
+                            f"如有疑問，請聯繫房東。"
+                        )
 
-房號：{room}
-租客：{tenant_name}
-期間：{period_text}
-金額：NT${amount:,}
-
-請於 7 天內完成繳費。
-如有疑問，請聯繫房東。"""
-
-                        response = self.send_line_message(line_id, message)
+                        ok = self.send_line_message(line_id, msg_body)
 
                         meta_json = json.dumps({
                             "period_id": period_id,
@@ -338,33 +374,30 @@ class NotificationService(BaseDBService):
                             "tenant_name": tenant_name,
                         }, ensure_ascii=False)
 
-                        if response:
-                            # 更新 last_notified_at（欄位若不存在會拋例外，不影響主流程）
+                        if ok:
                             try:
                                 cursor.execute(
                                     "UPDATE electricity_readings SET last_notified_at = NOW() WHERE id = %s",
-                                    (er_id,)
+                                    (er_id,),
                                 )
                             except Exception:
-                                pass  # 欄位不存在時靜默跳過
-
+                                pass
                             cursor.execute(
                                 """
                                 INSERT INTO notification_logs
                                 (category, recipient_type, recipient_id, room_number,
                                  notification_type, title, message, channel, status,
                                  sent_at, meta_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s::jsonb)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
                                 """,
                                 (
                                     'electricity', 'tenant', line_id, room,
                                     'first_bill', f'{period_text} 電費帳單',
-                                    message, 'line', 'sent', meta_json
-                                )
+                                    msg_body, 'line', 'sent', meta_json,
+                                ),
                             )
                             notified_count += 1
                             logger.info(f"✅ 發送電費通知: {room} ({tenant_name})")
-
                         else:
                             cursor.execute(
                                 """
@@ -372,14 +405,14 @@ class NotificationService(BaseDBService):
                                 (category, recipient_type, recipient_id, room_number,
                                  notification_type, title, message, channel, status,
                                  error_message, created_at, meta_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s::jsonb)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
                                 """,
                                 (
                                     'electricity', 'tenant', line_id, room,
                                     'first_bill', f'{period_text} 電費帳單',
-                                    message, 'line', 'failed',
-                                    'LINE API 回應失敗', meta_json
-                                )
+                                    msg_body, 'line', 'failed',
+                                    'LINE API 回應失敗', meta_json,
+                                ),
                             )
                             failed_count += 1
                             logger.warning(f"⚠️ 發送失敗: {room} ({tenant_name})")
@@ -403,24 +436,22 @@ class NotificationService(BaseDBService):
                                 (category, recipient_type, recipient_id, room_number,
                                  notification_type, title, channel, status,
                                  error_message, created_at, meta_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s::jsonb)
+                                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s::jsonb)
                                 """,
                                 (
                                     'electricity', 'tenant', line_id or 'unknown', room,
                                     'first_bill', f'{period_text} 電費帳單',
-                                    'line', 'failed', str(e)[:500], meta_json
-                                )
+                                    'line', 'failed', str(e)[:500], meta_json,
+                                ),
                             )
-                        except Exception as log_error:
-                            logger.error(f"❌ 寫入失敗日誌失敗: {log_error}")
+                        except Exception as log_err:
+                            logger.error(f"❌ 寫入失敗日誌失敗: {log_err}")
                         continue
 
                 log_db_operation("NOTIFICATION", "electricity_readings", True, notified_count)
-
                 summary = f"✅ 電費通知完成: 成功 {notified_count} 位"
                 if failed_count > 0:
                     summary += f", 失敗 {failed_count} 位"
-
                 logger.info(f"{summary}，催繳日期設為 {remind_date}")
                 return True, summary, notified_count
 
@@ -430,9 +461,11 @@ class NotificationService(BaseDBService):
             import traceback
             logger.error(traceback.format_exc())
             return False, f"❌ 電費通知失敗: {str(e)[:100]}", 0
-    
-    # ============= 租金催繳通知 =============
-    
+
+    # ──────────────────────────────────────────
+    # 租金催繳通知
+    # ──────────────────────────────────────────
+
     def send_rent_reminder(
         self,
         payment_id: int,
@@ -443,55 +476,70 @@ class NotificationService(BaseDBService):
                 cursor = conn.cursor()
                 cursor.execute(
                     """
-                    SELECT 
-                        ps.room_number,
-                        ps.tenant_name,
-                        ps.amount,
-                        ps.due_date,
-                        ps.payment_year,
-                        ps.payment_month,
-                        t.id as tenant_id,
-                        tc.line_user_id,
-                        tc.notify_rent,
+                    SELECT
+                        ps.room_number, ps.tenant_name, ps.amount,
+                        ps.due_date, ps.payment_year, ps.payment_month,
+                        t.id AS tenant_id, tc.line_user_id, tc.notify_rent,
                         COALESCE(tc.is_verified, false) AS is_verified
                     FROM payment_schedule ps
-                    LEFT JOIN tenants t 
-                        ON ps.room_number = t.room_number 
+                    LEFT JOIN tenants t
+                        ON ps.room_number = t.room_number
                        AND t.status = 'active'
                     LEFT JOIN tenant_contacts tc ON t.id = tc.tenant_id
                     WHERE ps.id = %s AND ps.status = 'unpaid'
                     """,
-                    (payment_id,)
+                    (payment_id,),
                 )
                 result = cursor.fetchone()
                 if not result:
                     logger.warning(f"⚠️ 租金記錄 {payment_id} 不存在或已繳款")
                     return False, "❌ 未找到租金記錄或已繳款"
+
                 (
                     room, tenant_name, amount, due_date, year, month,
                     tenant_id, line_id, notify_rent, is_verified,
                 ) = result
-                logger.info(f"🔍 查詢租金記錄: {room} ({tenant_name}), LINE ID: {line_id}, verified: {is_verified}")
+
+                logger.info(f"🔍 查詢租金記錄: {room} ({tenant_name}), verified: {is_verified}")
                 if not line_id:
                     return False, f"❌ {tenant_name} 未設定 LINE User ID"
                 if not is_verified:
                     return False, f"ℹ️ {tenant_name} 尚未完成 LINE 綁定驗證"
                 if not notify_rent:
                     return False, f"ℹ️ {tenant_name} 已關閉租金通知"
-                overdue_days = (
-                    (datetime.now().date() - due_date).days
-                    if isinstance(due_date, datetime)
-                    else (datetime.now().date() - due_date).days
-                )
+
+                overdue_days = (datetime.now().date() - due_date).days
+
                 messages = {
-                    "first": f"""💰 租金繳納提醒\n\n親愛的 {tenant_name} 您好，\n\n本月租金即將到期：\n房號：{room}\n期間：{year}/{month}\n金額：NT${amount:,}\n到期日：{due_date}\n\n請準時繳納，謝謝！""",
-                    "second": f"""💰 租金催繳通知\n\n{tenant_name} 您好，\n\n您的租金已逾期：\n房號：{room}\n期間：{year}/{month}\n金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n麻煩盡快完成繳納，避免影響租約。\n如有困難，請聯繫房東。""",
-                    "third": f"""⚠️ 租金逾期警告\n\n{tenant_name} 您好，\n\n您的租金已嚴重逾期：\n房號：{room}\n期間：{year}/{month}\n金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n請於 2 天內完成繳納，否則將採取進一步措施。""",
-                    "final": f"""🚨 最終通知\n\n{tenant_name}，\n\n您的租金已逾期超過 7 天：\n房號：{room}\n期間：{year}/{month}\n金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n這是最終通知，房東將直接聯絡您。\n請立即處理此事。"""
+                    "first": (
+                        f"💰 租金繳納提醒\n\n親愛的 {tenant_name} 您好，\n\n"
+                        f"本月租金即將到期：\n房號：{room}\n期間：{year}/{month}\n"
+                        f"金額：NT${amount:,}\n到期日：{due_date}\n\n請準時繳納，謝謝！"
+                    ),
+                    "second": (
+                        f"💰 租金催繳通知\n\n{tenant_name} 您好，\n\n"
+                        f"您的租金已逾期：\n房號：{room}\n期間：{year}/{month}\n"
+                        f"金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n"
+                        f"麻煩盡快完成繳納，避免影響租約。\n如有困難，請聯繫房東。"
+                    ),
+                    "third": (
+                        f"⚠️ 租金逾期警告\n\n{tenant_name} 您好，\n\n"
+                        f"您的租金已嚴重逾期：\n房號：{room}\n期間：{year}/{month}\n"
+                        f"金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n"
+                        f"請於 2 天內完成繳納，否則將採取進一步措施。"
+                    ),
+                    "final": (
+                        f"🚨 最終通知\n\n{tenant_name}，\n\n"
+                        f"您的租金已逾期超過 7 天：\n房號：{room}\n期間：{year}/{month}\n"
+                        f"金額：NT${amount:,}\n逾期天數：{max(0, overdue_days)} 天\n\n"
+                        f"這是最終通知，房東將直接聯絡您。\n請立即處理此事。"
+                    ),
                 }
                 message = messages.get(reminder_stage, messages["first"])
+
                 logger.info(f"📤 準備發送 LINE 訊息到: {line_id}")
-                response = self.send_line_message(line_id, message)
+                ok = self.send_line_message(line_id, message)
+
                 meta_json = json.dumps({
                     "payment_id": payment_id,
                     "amount": float(amount),
@@ -501,54 +549,57 @@ class NotificationService(BaseDBService):
                     "tenant_id": tenant_id,
                     "tenant_name": tenant_name,
                     "reminder_stage": reminder_stage,
-                    "overdue_days": max(0, overdue_days)
+                    "overdue_days": max(0, overdue_days),
                 }, ensure_ascii=False)
+
                 cursor.execute(
                     """
                     INSERT INTO notification_logs
                     (category, recipient_type, recipient_id, room_number,
                      notification_type, title, message, channel, status,
                      sent_at, error_message, meta_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s::jsonb)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s::jsonb)
                     """,
                     (
                         'rent', 'tenant', line_id, room,
                         f'{reminder_stage}_reminder', f'{year}/{month} 租金提醒',
                         message, 'line',
-                        'sent' if response else 'failed',
-                        None if response else 'LINE API 回應失敗',
-                        meta_json
-                    )
+                        'sent' if ok else 'failed',
+                        None if ok else 'LINE API 回應失敗',
+                        meta_json,
+                    ),
                 )
-                if response:
+
+                if ok:
                     log_db_operation("NOTIFICATION", "payment_schedule", True, 1)
                     return True, f"✅ 已發送 {reminder_stage} 階段催繳"
                 else:
                     log_db_operation("NOTIFICATION", "payment_schedule", False, error="LINE API 失敗")
                     return False, "❌ LINE 發送失敗"
+
         except Exception as e:
             log_db_operation("NOTIFICATION", "payment_schedule", False, error=str(e))
             logger.error(f"❌ 租金催繳失敗: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
             return False, f"❌ 租金催繳失敗: {str(e)[:100]}"
-    
-    # ============= 批次租金催繳 =============
-    
+
+    # ──────────────────────────────────────────
+    # 批次租金催繳
+    # ──────────────────────────────────────────
+
     def batch_send_rent_reminders(
         self,
         payment_ids: List[int],
         reminder_stage: str = "first"
     ) -> Tuple[int, int, int]:
-        success_count = 0
-        skip_count = 0
-        fail_count = 0
+        success_count = skip_count = fail_count = 0
         for payment_id in payment_ids:
             try:
-                success, msg = self.send_rent_reminder(payment_id, reminder_stage)
-                if success:
+                ok, msg = self.send_rent_reminder(payment_id, reminder_stage)
+                if ok:
                     success_count += 1
-                elif ("已關閉" in msg or "已繳款" in msg or "尚未完成 LINE 綁定驗證" in msg):
+                elif any(kw in msg for kw in ["已關閉", "已繳款", "尚未完成 LINE 綁定驗證"]):
                     skip_count += 1
                 else:
                     fail_count += 1
@@ -557,9 +608,11 @@ class NotificationService(BaseDBService):
                 fail_count += 1
         logger.info(f"✅ 批次租金催繳: 成功 {success_count}, 跳過 {skip_count}, 失敗 {fail_count}")
         return success_count, skip_count, fail_count
-    
-    # ============= 通用通知方法 =============
-    
+
+    # ──────────────────────────────────────────
+    # 通用通知方法
+    # ──────────────────────────────────────────
+
     def send_custom_notification(
         self,
         category: str,
@@ -569,7 +622,7 @@ class NotificationService(BaseDBService):
         title: str,
         message: str,
         channel: str = "line",
-        meta_data: Optional[Dict] = None
+        meta_data: Optional[Dict] = None,
     ) -> Tuple[bool, str]:
         try:
             success = False
@@ -585,6 +638,7 @@ class NotificationService(BaseDBService):
                 logger.warning("⚠️ SMS 功能尚未實作")
             else:
                 error_msg = f"不支援的通道: {channel}"
+
             with self.get_connection() as conn:
                 cursor = conn.cursor()
                 meta_json = json.dumps(meta_data or {}, ensure_ascii=False)
@@ -594,14 +648,14 @@ class NotificationService(BaseDBService):
                     (category, recipient_type, recipient_id, room_number,
                      notification_type, title, message, channel, status,
                      sent_at, error_message, meta_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s::jsonb)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(),%s,%s::jsonb)
                     """,
                     (
                         category, recipient_type, recipient_id, room_number,
                         'custom', title, message, channel,
                         'sent' if success else 'failed',
-                        error_msg, meta_json
-                    )
+                        error_msg, meta_json,
+                    ),
                 )
             if success:
                 log_db_operation("NOTIFICATION", "custom", True, 1)
@@ -614,15 +668,17 @@ class NotificationService(BaseDBService):
             log_db_operation("NOTIFICATION", "custom", False, error=str(e))
             logger.error(f"❌ 自定義通知失敗: {str(e)}")
             return False, f"❌ {str(e)[:100]}"
-    
-    # ============= 查詢通知歷史 (保留舊方法以兼容) =============
-    
+
+    # ──────────────────────────────────────────
+    # 查詢通知歷史（保留舊方法以兼容）
+    # ──────────────────────────────────────────
+
     def get_notification_history(
         self,
         category: Optional[str] = None,
         room_number: Optional[str] = None,
         status: Optional[str] = None,
-        limit: int = 100
+        limit: int = 100,
     ) -> List[Dict]:
         try:
             with self.get_connection() as conn:
@@ -639,8 +695,9 @@ class NotificationService(BaseDBService):
                     conditions.append("status = %s")
                     params.append(status)
                 params.append(limit)
-                cursor.execute(f"""
-                    SELECT 
+                cursor.execute(
+                    f"""
+                    SELECT
                         id, category, recipient_type, room_number,
                         notification_type, title, channel, status,
                         sent_at, error_message, meta_json
@@ -648,7 +705,9 @@ class NotificationService(BaseDBService):
                     WHERE {' AND '.join(conditions)}
                     ORDER BY sent_at DESC, created_at DESC
                     LIMIT %s
-                """, params)
+                    """,
+                    params,
+                )
                 columns = [desc[0] for desc in cursor.description]
                 rows = cursor.fetchall()
                 log_db_operation("SELECT", "notification_logs", True, len(rows))
