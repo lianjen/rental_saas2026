@@ -1,8 +1,10 @@
 """
-電費管理 - v5.2
-✅ v5.1 所有功能保留
-✅ [FIX v5.2] 手動發送電費通知：改用正確的 send_electricity_bill_notification(period_id)
-             舊版逐筆傳 room_number/amount/kwh 導致 TypeError，現統一整批呼叫一次
+電費管理 - v5.3
+✅ v5.2 所有功能保留
+✅ [FIX v5.3-A] 台電帳單 number_input 加 session_state 持久化，rerun 後不消失
+✅ [FIX v5.3-B] 各樓層 expander 增加公用電度數、單價、差異 metric
+✅ [FIX v5.3-C] 1F 公用電計算：台電度數 > 房間讀數時，差額顯示於摘要
+✅ [FIX v5.3-D] floor_summaries 補上 public_kwh 欄位，避免 KeyError
 """
 
 import logging
@@ -38,7 +40,7 @@ except ImportError:
             st.caption(desc)
 
     def data_table(df, key="table"):
-        st.dataframe(df, width="stretch", key=key)
+        st.dataframe(df, use_container_width=True, key=key)
 
     def info_card(title, content, icon="", type="info"):
         st.info(f"{icon} {title}: {content}")
@@ -125,7 +127,6 @@ def _get_selected_period_default_index(
     return values.index(default_period_id) if default_period_id in values else 0
 
 
-# ✅ [FIX v5.1] 統一轉換 remind_start_date：相容 str / datetime.date / None
 def _to_date_safe(v) -> Optional[date]:
     """
     Supabase 可能回傳 str("2026-04-01") 或 datetime.date(2026,4,1) 或 None。
@@ -139,6 +140,26 @@ def _to_date_safe(v) -> Optional[date]:
         return datetime.strptime(str(v), "%Y-%m-%d").date()
     except Exception:
         return None
+
+
+# ============================================================
+# [FIX v5.3-A] 台電帳單 session_state 持久化工具
+# ============================================================
+def _init_taipower_input_state(period_id: int):
+    """確保每個 period_id 的台電輸入 state key 存在"""
+    for floor_key in FLOOR_CONFIG:
+        amt_key = f"tp_{period_id}_{floor_key}_amt"
+        kwh_key = f"tp_{period_id}_{floor_key}_kwh"
+        if amt_key not in st.session_state:
+            st.session_state[amt_key] = 0
+        if kwh_key not in st.session_state:
+            st.session_state[kwh_key] = 0.0
+
+
+def _get_taipower_input_value(period_id: int, floor_key: str, field: str):
+    """取得持久化的台電輸入值（amt / kwh）"""
+    key = f"tp_{period_id}_{floor_key}_{field}"
+    return st.session_state.get(key, 0 if field == "amt" else 0.0)
 
 
 # ============================================================
@@ -166,8 +187,13 @@ def calculate_electricity_charges(
         shared_per_room = int(round(public_kwh / sharing_count)) if sharing_count > 0 else 0
 
         results = []
+
+        # [FIX v5.3-C] 1F：計算公用電差額
+        public_kwh_1f = 0
         if floor_1f and floor_1f["kwh"] > 0:
             unit_1f = round(floor_1f["amount"] / floor_1f["kwh"], 2)
+            exclusive_usage_sum = sum(room_readings.get(r, 0) for r in ROOMS.EXCLUSIVE_ROOMS)
+            public_kwh_1f = max(0, floor_1f["kwh"] - exclusive_usage_sum)
             for room in ROOMS.EXCLUSIVE_ROOMS:
                 kwh = room_readings.get(room, 0)
                 if kwh <= 0:
@@ -206,16 +232,19 @@ def calculate_electricity_charges(
         total_charge = sum(r["應繳金額"] for r in results)
         total_taipower = sum(b["amount"] for b in taipower_bills)
 
+        # [FIX v5.3-D] floor_summaries 補上 public_kwh
         floor_summaries = []
         if floor_1f:
             f1_results = [r for r in results if r["房號"] in ["1A", "1B"]]
             if f1_results:
+                unit_1f_val = round(floor_1f["amount"] / floor_1f["kwh"], 2) if floor_1f["kwh"] > 0 else 0
                 floor_summaries.append({
                     "floor": "1F",
                     "bill_amount": floor_1f["amount"],
                     "bill_kwh": floor_1f["kwh"],
                     "room_kwh": sum(r["使用度數"] for r in f1_results),
-                    "unit_price": round(floor_1f["amount"] / floor_1f["kwh"], 2),
+                    "public_kwh": round(public_kwh_1f, 2),
+                    "unit_price": unit_1f_val,
                     "total_charge": sum(r["應繳金額"] for r in f1_results),
                 })
 
@@ -223,11 +252,14 @@ def calculate_electricity_charges(
             fl = bill["floor_label"]
             fl_r = [r for r in results if r["房號"] in FLOOR_CONFIG[fl]["rooms"]]
             if fl_r:
+                fl_room_kwh = sum(r["使用度數"] for r in fl_r)
+                fl_public_kwh = max(0, bill["kwh"] - fl_room_kwh)
                 floor_summaries.append({
                     "floor": fl,
                     "bill_amount": bill["amount"],
                     "bill_kwh": bill["kwh"],
-                    "room_kwh": sum(r["使用度數"] for r in fl_r),
+                    "room_kwh": fl_room_kwh,
+                    "public_kwh": round(fl_public_kwh, 2),
                     "unit_price": merged_unit_price,
                     "total_charge": sum(r["應繳金額"] for r in fl_r),
                 })
@@ -244,6 +276,7 @@ def calculate_electricity_charges(
             "shared_per_room": shared_per_room,
             "merged_kwh": merged_kwh,
             "merged_amount": merged_amount,
+            "public_kwh_1f": public_kwh_1f,
         }
 
     except Exception as e:
@@ -337,7 +370,6 @@ def render_period_tab(elec_service: ElectricityService):
 
     col_d, col_b = st.columns([3, 1])
     with col_d:
-        # ✅ [FIX v5.1] 使用 _to_date_safe() 相容 str / datetime.date / None
         remind_default = _to_date_safe(current_remind_date) or date.today()
         new_remind_date = st.date_input(
             "設定催繳開始日",
@@ -400,6 +432,9 @@ def render_calculation_tab(
     section_header("步驟 1: 輸入台電帳單", "📄")
     st.caption("💡 1F 獨立計算 | 2F~4F 合併計算公用電並分攤給 2A~4D")
 
+    # [FIX v5.3-A] 初始化持久化 state
+    _init_taipower_input_state(period_id)
+
     r1c1, r1c2 = st.columns(2)
     r2c1, r2c2 = st.columns(2)
     cols_map = {"1F": r1c1, "2F": r1c2, "3F": r2c1, "4F": r2c2}
@@ -411,21 +446,28 @@ def render_calculation_tab(
             badge = "🔒 獨立" if config["is_independent"] else "🔗 分攤"
             st.caption(f"{badge}: {', '.join(config['rooms'])}")
 
+            amt_state_key = f"tp_{period_id}_{floor_key}_amt"
+            kwh_state_key = f"tp_{period_id}_{floor_key}_kwh"
+
             amount = st.number_input(
                 "金額 (元)",
                 min_value=0,
-                value=0,
+                value=st.session_state[amt_state_key],
                 step=100,
-                key=f"{floor_key}_amt",
+                key=f"{floor_key}_amt_{period_id}",
             )
             kwh = st.number_input(
                 "度數",
                 min_value=0.0,
-                value=0.0,
+                value=float(st.session_state[kwh_state_key]),
                 step=10.0,
                 format="%.2f",
-                key=f"{floor_key}_kwh",
+                key=f"{floor_key}_kwh_{period_id}",
             )
+            # 同步回 state（供 rerun 後保留）
+            st.session_state[amt_state_key] = amount
+            st.session_state[kwh_state_key] = kwh
+
             floor_data[floor_key] = {"amount": amount, "kwh": kwh}
 
     if st.button("💾 儲存台電單", type="primary"):
@@ -490,7 +532,7 @@ def render_calculation_tab(
                         value=previous,
                         step=1.0,
                         format="%.2f",
-                        key=f"prev_{room}",
+                        key=f"prev_{room}_{period_id}",
                         disabled=True,
                     )
                     current = st.number_input(
@@ -499,7 +541,7 @@ def render_calculation_tab(
                         value=saved_curr,
                         step=1.0,
                         format="%.2f",
-                        key=f"curr_{room}",
+                        key=f"curr_{room}_{period_id}",
                     )
                     st.caption("🔵 已儲存，可修改本期")
                 else:
@@ -511,7 +553,7 @@ def render_calculation_tab(
                             value=previous,
                             step=1.0,
                             format="%.2f",
-                            key=f"prev_{room}",
+                            key=f"prev_{room}_{period_id}",
                             disabled=True,
                         )
                         current = st.number_input(
@@ -520,7 +562,7 @@ def render_calculation_tab(
                             value=previous,
                             step=1.0,
                             format="%.2f",
-                            key=f"curr_{room}",
+                            key=f"curr_{room}_{period_id}",
                         )
                         st.caption("🟢 上期已自動帶入")
                     else:
@@ -530,7 +572,7 @@ def render_calculation_tab(
                             value=0.0,
                             step=1.0,
                             format="%.2f",
-                            key=f"prev_{room}",
+                            key=f"prev_{room}_{period_id}",
                         )
                         current = st.number_input(
                             "本期 📈",
@@ -538,7 +580,7 @@ def render_calculation_tab(
                             value=0.0,
                             step=1.0,
                             format="%.2f",
-                            key=f"curr_{room}",
+                            key=f"curr_{room}_{period_id}",
                         )
                         st.caption("⚪ 首次輸入")
 
@@ -618,16 +660,30 @@ def render_calculation_tab(
     c3.metric("每間分攤", f"{result['shared_per_room']} 度")
     c4.metric("2-4F 單價", f"${result['merged_unit_price']:.2f}/度")
 
+    # [FIX v5.3-C] 1F 公用電提示
+    if result.get("public_kwh_1f", 0) > 0:
+        st.warning(
+            f"⚠️ 1F 台電度數 > 1A+1B 讀數，差額 **{result['public_kwh_1f']:.1f} 度** "
+            f"（公共走廊/設備用電，未分攤）"
+        )
+
     st.divider()
     st.markdown("### 📊 各樓層摘要")
     for fs in result["floor_summaries"]:
+        diff_charge = fs["total_charge"] - fs["bill_amount"]
+        diff_color = "🟢" if abs(diff_charge) < 50 else ("🔴" if diff_charge < 0 else "🟡")
         with st.expander(
-            f"**{fs['floor']}** - 台電: ${fs['bill_amount']:,} | 收費: ${fs['total_charge']:,}",
+            f"**{fs['floor']}** - 台電: ${fs['bill_amount']:,} | 收費: ${fs['total_charge']:,} {diff_color}",
             expanded=True,
         ):
-            col1, col2 = st.columns(2)
+            # [FIX v5.3-B] 完整四欄 metric
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("台電度數", f"{fs['bill_kwh']:.0f} 度")
             col2.metric("房間用電", f"{fs['room_kwh']:.0f} 度")
+            # [FIX v5.3-D] 安全讀取 public_kwh
+            pub_kwh = fs.get("public_kwh", 0)
+            col3.metric("公用/差額", f"{pub_kwh:.1f} 度")
+            col4.metric("單價", f"${fs['unit_price']:.2f}/度")
 
     st.divider()
     st.markdown(f"""
@@ -671,9 +727,6 @@ def render_calculation_tab(
         st.warning("⚠️ 需要手動點擊「發送」")
         if st.button("📤 立即發送電費通知", type="primary"):
             with st.spinner("正在發送通知..."):
-                # ✅ [FIX v5.2] 正確呼叫：整批一次，傳 period_id 即可
-                # send_electricity_bill_notification(period_id, remind_date=None)
-                # → 回傳 (bool, str, int)
                 ok, msg, notified = notify_service.send_electricity_bill_notification(
                     period_id=period_id
                 )
@@ -689,7 +742,6 @@ def render_calculation_tab(
         if not remind_date_raw:
             st.error("❌ 請先設定催繳日期")
         else:
-            # ✅ [FIX v5.1] 使用 _to_date_safe() 相容 str / datetime.date
             remind_date_obj = _to_date_safe(remind_date_raw)
             if remind_date_obj:
                 days_left = (remind_date_obj - date.today()).days
@@ -958,7 +1010,7 @@ def render_statistics_tab(elec_service: ElectricityService):
             ),
             bargap=0.35,
         )
-        st.plotly_chart(fig, width="stretch")
+        st.plotly_chart(fig, use_container_width=True)
 
     else:
         col_b, col_l = st.columns(2)
@@ -1039,7 +1091,7 @@ def render_statistics_tab(elec_service: ElectricityService):
                 bargap=0.15,
                 bargroupgap=0.05,
             )
-            st.plotly_chart(fig2, width="stretch")
+            st.plotly_chart(fig2, use_container_width=True)
 
         else:
             pivot = rt.pivot_table(
