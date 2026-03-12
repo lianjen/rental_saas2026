@@ -1,9 +1,8 @@
 """
-電費管理 - v5.1
-✅ v5.0 所有功能保留
-✅ [FIX v5.1] _to_date_safe()：相容 Supabase 回傳 datetime.date / str / None
-✅ [FIX v5.1] render_period_tab: date_input value 不再 strptime crash
-✅ [FIX v5.1] render_calculation_tab: days_left 計算不再 strptime crash
+電費管理 - v5.2
+✅ v5.1 所有功能保留
+✅ [FIX v5.2] 手動發送電費通知：改用正確的 send_electricity_bill_notification(period_id)
+             舊版逐筆傳 room_number/amount/kwh 導致 TypeError，現統一整批呼叫一次
 """
 
 import logging
@@ -672,24 +671,16 @@ def render_calculation_tab(
         st.warning("⚠️ 需要手動點擊「發送」")
         if st.button("📤 立即發送電費通知", type="primary"):
             with st.spinner("正在發送通知..."):
-                success_count = 0
-                fail_count = 0
-                for detail in enriched_details:
-                    ok, msg = notify_service.send_electricity_bill_notification(
-                        room_number=detail["房號"],
-                        period_id=period_id,
-                        amount=detail["應繳金額"],
-                        kwh=detail["總度數"],
-                    )
-                    if ok:
-                        success_count += 1
-                    else:
-                        fail_count += 1
-
-                if success_count:
-                    st.success(f"✅ 成功發送 {success_count} 則")
-                if fail_count:
-                    st.error(f"❌ 失敗 {fail_count} 則")
+                # ✅ [FIX v5.2] 正確呼叫：整批一次，傳 period_id 即可
+                # send_electricity_bill_notification(period_id, remind_date=None)
+                # → 回傳 (bool, str, int)
+                ok, msg, notified = notify_service.send_electricity_bill_notification(
+                    period_id=period_id
+                )
+            if ok:
+                st.success(f"{msg}（共通知 {notified} 位）")
+            else:
+                st.error(msg)
 
     elif notify_mode == "自動發送":
         period_info = elec_service.get_period_by_id(period_id)
