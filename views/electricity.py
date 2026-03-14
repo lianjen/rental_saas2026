@@ -1,9 +1,10 @@
 """
-電費管理 - v5.5.1
-✅ v5.5 所有功能保留
-✅ [FIX v5.5.1] 用 .get() 防禦舊版 session_state
-    - result.get('shared_per_room_1f', 0) 避免 KeyError
-    - result.get('public_kwh_1f', 0) 同步改為安全存取
+電費管理 - v5.5.2
+✅ v5.5.1 所有功能保留
+✅ [FIX v5.5.2] 分攤度數不提前 round，金額最後才 round
+    - shared_per_room / shared_per_room_1f 保留浮點 (e.g. 111.2)
+    - round(total_kwh * unit_price) 最後才取整 → 消除 ±1 元誤差
+    - UI 顯示改用 round(..., 1) 呈現一位小數
 """
 
 import logging
@@ -186,23 +187,28 @@ def calculate_electricity_charges(
         if floors_2f_4f:
             merged_amount = sum(b["amount"] for b in floors_2f_4f)
             merged_kwh = sum(b["kwh"] for b in floors_2f_4f)
-            merged_unit_price = round(merged_amount / merged_kwh, 2) if merged_kwh > 0 else 0
+            # [FIX v5.5.2] 單價保留完整精度，最後乘積才 round
+            merged_unit_price_exact = merged_amount / merged_kwh if merged_kwh > 0 else 0
+            merged_unit_price = round(merged_unit_price_exact, 2)  # 僅供顯示
         else:
-            merged_amount = merged_kwh = merged_unit_price = 0
+            merged_amount = merged_kwh = merged_unit_price = merged_unit_price_exact = 0
 
         sharing_rooms_usage = sum(room_readings.get(r, 0) for r in ROOMS.SHARING_ROOMS)
         public_kwh = max(0, merged_kwh - sharing_rooms_usage)
         sharing_rooms_with_reading = [r for r in ROOMS.SHARING_ROOMS if room_readings.get(r, 0) > 0]
         sharing_count = len(sharing_rooms_with_reading)
-        shared_per_room = int(round(public_kwh / sharing_count)) if sharing_count > 0 else 0
+
+        # [FIX v5.5.2] 不提前 round，保留浮點（如 111.2）
+        shared_per_room = public_kwh / sharing_count if sharing_count > 0 else 0
 
         results = []
 
-        # ── [FIX v5.5] 1F：公用電平均分攤給 1A / 1B ──────────────
+        # ── [FIX v5.5.2] 1F：公用電平均分攤給 1A / 1B ──────────────
         public_kwh_1f = 0
         shared_per_room_1f = 0
         if floor_1f and floor_1f["kwh"] > 0:
-            unit_1f = round(floor_1f["amount"] / floor_1f["kwh"], 2)
+            unit_1f_exact = floor_1f["amount"] / floor_1f["kwh"]
+            unit_1f = round(unit_1f_exact, 2)  # 僅供顯示
             exclusive_rooms_with_reading = [
                 r for r in ROOMS.EXCLUSIVE_ROOMS if room_readings.get(r, 0) > 0
             ]
@@ -210,9 +216,8 @@ def calculate_electricity_charges(
             public_kwh_1f = max(0, floor_1f["kwh"] - exclusive_usage_sum)
 
             exclusive_count = len(exclusive_rooms_with_reading)
-            shared_per_room_1f = (
-                int(round(public_kwh_1f / exclusive_count)) if exclusive_count > 0 else 0
-            )
+            # [FIX v5.5.2] 不提前 round
+            shared_per_room_1f = public_kwh_1f / exclusive_count if exclusive_count > 0 else 0
 
             for room in ROOMS.EXCLUSIVE_ROOMS:
                 kwh = room_readings.get(room, 0)
@@ -224,10 +229,11 @@ def calculate_electricity_charges(
                     "房號": room,
                     "類型": "獨立房間",
                     "使用度數": round(kwh, 2),
-                    "公用分攤": shared_per_room_1f,
+                    "公用分攤": round(shared_per_room_1f, 1),
                     "總度數": round(total_kwh_1f, 2),
                     "單價": unit_1f,
-                    "應繳金額": round(total_kwh_1f * unit_1f),
+                    # [FIX v5.5.2] 用精確單價計算，最後才 round
+                    "應繳金額": round(total_kwh_1f * unit_1f_exact),
                 })
 
         # ── 2F~4F 各房間 ──────────────────────────────────────────
@@ -245,10 +251,11 @@ def calculate_electricity_charges(
                 "房號": room,
                 "類型": "分攤房間",
                 "使用度數": round(kwh, 2),
-                "公用分攤": int(shared_per_room),
+                "公用分攤": round(shared_per_room, 1),
                 "總度數": round(total_room_kwh, 2),
                 "單價": merged_unit_price,
-                "應繳金額": round(total_room_kwh * merged_unit_price),
+                # [FIX v5.5.2] 用精確單價計算，最後才 round
+                "應繳金額": round(total_room_kwh * merged_unit_price_exact),
             })
 
         total_charge = sum(r["應繳金額"] for r in results)
@@ -295,11 +302,11 @@ def calculate_electricity_charges(
             "floor_summaries": floor_summaries,
             "merged_unit_price": merged_unit_price,
             "total_public_kwh": public_kwh,
-            "shared_per_room": shared_per_room,
+            "shared_per_room": round(shared_per_room, 1),
             "merged_kwh": merged_kwh,
             "merged_amount": merged_amount,
             "public_kwh_1f": public_kwh_1f,
-            "shared_per_room_1f": shared_per_room_1f,
+            "shared_per_room_1f": round(shared_per_room_1f, 1),
         }
 
     except Exception as e:
@@ -753,7 +760,6 @@ def render_calculation_tab(
         "使用度數", "公用分攤", "總度數", "單價", "應繳金額",
     ]
     details_df = details_df[col_order].copy()
-    details_df["公用分攤"] = details_df["公用分攤"].astype(int)
     details_df.columns = [
         "樓層", "房號", "類型", "上期讀數", "本期讀數",
         "使用度數", "公用分攤", "總度數", "單價", "應繳金額",
