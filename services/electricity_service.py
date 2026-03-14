@@ -1,14 +1,11 @@
 """
-電費管理服務 - v5.0
-✅ v4.5 所有功能保留
-✅ [NEW v5.0] 電費預收帳戶 electricity_deposit_ledger
-    - 自動建表（首次實例化就建女待延所）
-    - add_deposit: 新增預收電費
-    - deduct_electricity: 從帳戶扣除電費
-    - get_deposit_ledger: 查詢流水帳（餘款用 Window Function 即時算）
-    - get_deposit_balance: 查詢當前餘款
-    - delete_deposit_entry: 刪除單筆記錄
-    - get_all_rooms_deposit_summary: 全房間餘款摘要
+電費管理服務 - v5.4
+✅ v5.0 所有功能保留
+✅ [NEW v5.4] electricity_taipower_bills 台電帳單持久化
+    - _init_taipower_bills_table: 自動建表
+    - save_taipower_bills:   UPSERT 一整期的 4 筆帳單
+    - get_taipower_bills:    讀取指定 period_id 的帳單 → List[Dict]
+    - delete_taipower_bills: 刪除整期帳單（重新輸入時使用）
 """
 
 import pandas as pd
@@ -24,6 +21,7 @@ class ElectricityService(BaseDBService):
     def __init__(self):
         super().__init__()
         self._init_deposit_ledger_table()
+        self._init_taipower_bills_table()
 
     # ==================== 內部建表 ====================
 
@@ -61,6 +59,118 @@ class ElectricityService(BaseDBService):
         except Exception as e:
             logger.error(f"❌ 建表失敗: {str(e)}")
 
+    def _init_taipower_bills_table(self) -> None:
+        """自動建立 electricity_taipower_bills 台電帳單資料表"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS electricity_taipower_bills (
+                        id          SERIAL PRIMARY KEY,
+                        period_id   INTEGER NOT NULL
+                                    REFERENCES electricity_periods(id)
+                                    ON DELETE CASCADE,
+                        floor_label TEXT    NOT NULL,
+                        amount      INTEGER NOT NULL DEFAULT 0,
+                        kwh         NUMERIC(10,2) NOT NULL DEFAULT 0,
+                        updated_at  TIMESTAMP DEFAULT NOW(),
+                        UNIQUE (period_id, floor_label)
+                    )
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_etb_period
+                    ON electricity_taipower_bills(period_id)
+                """)
+                conn.commit()
+                logger.info("✅ electricity_taipower_bills 資料表檢查完成")
+        except Exception as e:
+            logger.error(f"❌ 建立 taipower_bills 表失敗: {str(e)}")
+
+    # ==================== 台電帳單 CRUD ====================
+
+    def save_taipower_bills(
+        self,
+        period_id: int,
+        bills: List[Dict],
+    ) -> Tuple[bool, str]:
+        """
+        UPSERT 一整期台電帳單
+        bills 格式: [{"floor_label": "1F", "amount": 1200, "kwh": 85.0}, ...]
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                for b in bills:
+                    cursor.execute(
+                        """
+                        INSERT INTO electricity_taipower_bills
+                            (period_id, floor_label, amount, kwh, updated_at)
+                        VALUES (%s, %s, %s, %s, NOW())
+                        ON CONFLICT (period_id, floor_label) DO UPDATE SET
+                            amount     = EXCLUDED.amount,
+                            kwh        = EXCLUDED.kwh,
+                            updated_at = NOW()
+                        """,
+                        (period_id, b["floor_label"], int(b["amount"]), float(b["kwh"])),
+                    )
+                conn.commit()
+                log_db_operation("UPSERT", "electricity_taipower_bills", True, len(bills))
+                logger.info(f"✅ 台電帳單已儲存: period={period_id}, {len(bills)} 筆")
+                return True, f"✅ 已儲存 {len(bills)} 個台電單"
+        except Exception as e:
+            log_db_operation("UPSERT", "electricity_taipower_bills", False, error=str(e))
+            logger.error(f"❌ 儲存台電帳單失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}"
+
+    def get_taipower_bills(self, period_id: int) -> List[Dict]:
+        """
+        讀取指定期間的台電帳單
+        返回: [{"floor_label": "1F", "amount": 1200, "kwh": 85.0}, ...]
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT floor_label, amount, kwh
+                    FROM electricity_taipower_bills
+                    WHERE period_id = %s
+                    ORDER BY floor_label
+                    """,
+                    (period_id,),
+                )
+                rows = cursor.fetchall()
+                result = [
+                    {"floor_label": row[0], "amount": int(row[1]), "kwh": float(row[2])}
+                    for row in rows
+                ]
+                log_db_operation("SELECT", "electricity_taipower_bills", True, len(result))
+                logger.info(f"✅ 載入台電帳單: period={period_id}, {len(result)} 筆")
+                return result
+        except Exception as e:
+            log_db_operation("SELECT", "electricity_taipower_bills", False, error=str(e))
+            logger.error(f"❌ 讀取台電帳單失敗: {str(e)}")
+            return []
+
+    def delete_taipower_bills(self, period_id: int) -> Tuple[bool, str]:
+        """刪除整期台電帳單（重新輸入時使用）"""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "DELETE FROM electricity_taipower_bills WHERE period_id = %s",
+                    (period_id,),
+                )
+                deleted = cursor.rowcount
+                conn.commit()
+                log_db_operation("DELETE", "electricity_taipower_bills", True, deleted)
+                logger.info(f"✅ 刪除台電帳單: period={period_id}, {deleted} 筆")
+                return True, f"✅ 已刪除 {deleted} 筆"
+        except Exception as e:
+            log_db_operation("DELETE", "electricity_taipower_bills", False, error=str(e))
+            logger.error(f"❌ 刪除台電帳單失敗: {str(e)}")
+            return False, f"❌ {str(e)[:100]}"
+
     # ==================== 預收電費帳戶 ====================
 
     def add_deposit(
@@ -70,14 +180,6 @@ class ElectricityService(BaseDBService):
         amount:      float,
         description: str = "",
     ) -> Tuple[bool, str, Optional[int]]:
-        """
-        新增預收電費
-        Args:
-            room_number: 房號
-            date_str:    日期 YYYY-MM-DD
-            amount:      預收金額（正數）
-            description: 說明，如 '預捥2B王程電費待扣款'
-        """
         try:
             if amount <= 0:
                 return False, "❌ 金額必須大於 0", None
@@ -115,27 +217,16 @@ class ElectricityService(BaseDBService):
         description: str = "",
         period_id:   Optional[int] = None,
     ) -> Tuple[bool, str, Optional[int]]:
-        """
-        從預收帳戶扣除電費
-        Args:
-            room_number: 房號
-            date_str:    日期 YYYY-MM-DD
-            amount:      扣除金額（正數）
-            description: 說明，如 '5-6月電費'
-            period_id:   關聯電費期間 ID（可不填）
-        """
         try:
             if amount <= 0:
                 return False, "❌ 金額必須大於 0", None
             datetime.strptime(date_str, "%Y-%m-%d")
 
-            # 檢查餘款是否充足
             balance = self.get_deposit_balance(room_number)
             if balance < amount:
                 logger.warning(
                     f"⚠️ {room_number} 餘款不足: 餘 ${balance:,.0f}，要扣 ${amount:,.0f}"
                 )
-                # 仅警告不阻擋，允許負餘款（套用你的 Excel 行為）
 
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -165,7 +256,6 @@ class ElectricityService(BaseDBService):
             return False, f"❌ {str(e)[:100]}", None
 
     def get_deposit_balance(self, room_number: str) -> float:
-        """查詢指定房間的當前餘款"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -183,11 +273,6 @@ class ElectricityService(BaseDBService):
             return 0.0
 
     def get_deposit_ledger(self, room_number: str) -> pd.DataFrame:
-        """
-        查詢指定房間的完整流水帳
-        餘款用 Window Function 即時計算，刪除記錄後不需重算
-        返回欄位: 日期, 類型, 說明, 預收電費, 扣電費, 餘款, 期間ID, id
-        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -229,7 +314,6 @@ class ElectricityService(BaseDBService):
             return pd.DataFrame()
 
     def delete_deposit_entry(self, entry_id: int) -> Tuple[bool, str]:
-        """刪除單筆記錄（Window Function 方案，刪除後餘款自動重算不需額外操作）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -261,10 +345,6 @@ class ElectricityService(BaseDBService):
             return False, f"❌ {str(e)[:100]}"
 
     def get_all_rooms_deposit_summary(self) -> pd.DataFrame:
-        """
-        全房間預收電費餘款摘要
-        返回: 房號, 預收總額, 扣除總額, 當前餘款, 最近一筆日期
-        """
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -303,10 +383,6 @@ class ElectricityService(BaseDBService):
         month_end: int,
         remind_start_date: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[int]]:
-        """
-        新增電費期間
-        ✅ [FIX v4.5] 支援建立時一併寫入 remind_start_date
-        """
         try:
             if not (1 <= month_start <= 12 and 1 <= month_end <= 12):
                 return False, "❌ 月份必須在 1-12 之間", None
@@ -362,7 +438,6 @@ class ElectricityService(BaseDBService):
             return False, f"❌ {str(e)[:100]}", None
 
     def get_all_periods(self) -> List[Dict]:
-        """取得所有電費期間（含 display 欄位）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -401,7 +476,6 @@ class ElectricityService(BaseDBService):
             return []
 
     def get_period_by_id(self, period_id: int) -> Optional[Dict]:
-        """根據 ID 查詢單一期間"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -437,7 +511,6 @@ class ElectricityService(BaseDBService):
             return None
 
     def delete_period(self, period_id: int) -> Tuple[bool, str]:
-        """刪除期間（會先檢查關聯記錄）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -476,7 +549,6 @@ class ElectricityService(BaseDBService):
         period_id: int,
         remind_date: str,
     ) -> Tuple[bool, str]:
-        """更新催繳開始日"""
         try:
             try:
                 datetime.strptime(remind_date, "%Y-%m-%d")
@@ -512,7 +584,6 @@ class ElectricityService(BaseDBService):
         room: str,
         period_id: int,
     ) -> Optional[float]:
-        """取得指定房間在「之前期間」的最後一次本期讀數"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -538,7 +609,6 @@ class ElectricityService(BaseDBService):
             return None
 
     def get_all_readings(self, period_id: int) -> List[Dict]:
-        """取得特定期間的所有電表讀數"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -581,7 +651,6 @@ class ElectricityService(BaseDBService):
         amount_due:       int   = 0,
         room_type:        str   = "unknown",
     ) -> Tuple[bool, str]:
-        """儲存電表讀數（含完整計費資訊）"""
         try:
             if current < previous:
                 logger.warning(f"⚠️ {room}: 本期讀數 ({current}) < 上期讀數 ({previous})")
@@ -643,7 +712,6 @@ class ElectricityService(BaseDBService):
         paid_amount:  int,
         payment_date: str,
     ) -> Tuple[bool, str]:
-        """標記電費已繳"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -676,7 +744,6 @@ class ElectricityService(BaseDBService):
         period_id:   int,
         room_number: str,
     ) -> Tuple[bool, str]:
-        """取消已繳（反標記）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -707,7 +774,6 @@ class ElectricityService(BaseDBService):
     # ==================== 計費記錄查詢 ====================
 
     def get_payment_record(self, period_id: int) -> Optional[pd.DataFrame]:
-        """查詢指定期間的電費計費記錄（DataFrame 版本）"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -761,14 +827,12 @@ class ElectricityService(BaseDBService):
             return None
 
     def get_period_records(self, period_id: int) -> pd.DataFrame:
-        """追蹤頁面用高階 API"""
         df = self.get_payment_record(period_id)
         if df is None:
             return pd.DataFrame()
         return df
 
     def get_payment_summary(self, period_id: int) -> Optional[Dict]:
-        """取得電費統計摘要"""
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
