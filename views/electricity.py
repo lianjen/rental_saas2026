@@ -1,11 +1,9 @@
 """
-電費管理 - v5.5
-✅ v5.4 所有功能保留
-✅ [FIX v5.5] 1F 公用電正確分攤
-    - 公用電 = 台電1F度數 - 1A用電 - 1B用電
-    - 每間分攤 = int(round(公用電 / 1F有讀數房間數))
-    - 1A / 1B 的「公用分攤」、「總度數」、「應繳金額」均含公用電
-    - 收費總計 ≈ 台電1F單據（差異僅四捨五入）
+電費管理 - v5.5.1
+✅ v5.5 所有功能保留
+✅ [FIX v5.5.1] 用 .get() 防禦舊版 session_state
+    - result.get('shared_per_room_1f', 0) 避免 KeyError
+    - result.get('public_kwh_1f', 0) 同步改為安全存取
 """
 
 import logging
@@ -129,10 +127,6 @@ def _get_selected_period_default_index(
 
 
 def _to_date_safe(v) -> Optional[date]:
-    """
-    Supabase 可能回傳 str("2026-04-01") 或 datetime.date(2026,4,1) 或 None。
-    統一轉成 datetime.date，避免 strptime() crash。
-    """
     if v is None:
         return None
     if isinstance(v, date):
@@ -147,13 +141,9 @@ def _to_date_safe(v) -> Optional[date]:
 # [v5.4] 台電帳單 session_state 持久化工具（DB 優先）
 # ============================================================
 def _init_taipower_input_state(period_id: int, elec_service: ElectricityService):
-    """
-    從 DB 載入台電帳單到 session_state。
-    若 DB 無資料，則以 0 初始化（不覆蓋已存在的 state key）。
-    """
     db_loaded_key = f"tp_{period_id}_db_loaded"
     if st.session_state.get(db_loaded_key):
-        return  # 同一 period 已載入過，避免每次 rerun 都查 DB
+        return
 
     db_bills = elec_service.get_taipower_bills(period_id)
     db_map = {b["floor_label"]: b for b in db_bills}
@@ -170,7 +160,6 @@ def _init_taipower_input_state(period_id: int, elec_service: ElectricityService)
             if kwh_key not in st.session_state:
                 st.session_state[kwh_key] = 0.0
 
-    # 若 DB 有資料，同步到 taipower_bills session cache
     if db_bills:
         st.session_state.setdefault("taipower_bills", {})[period_id] = db_bills
 
@@ -178,7 +167,6 @@ def _init_taipower_input_state(period_id: int, elec_service: ElectricityService)
 
 
 def _get_taipower_input_value(period_id: int, floor_key: str, field: str):
-    """取得持久化的台電輸入值（amt / kwh）"""
     key = f"tp_{period_id}_{floor_key}_{field}"
     return st.session_state.get(key, 0 if field == "amt" else 0.0)
 
@@ -194,7 +182,7 @@ def calculate_electricity_charges(
         floor_1f = next((b for b in taipower_bills if b["floor_label"] == "1F"), None)
         floors_2f_4f = [b for b in taipower_bills if b["floor_label"] != "1F"]
 
-        # ── 2F~4F 合併計算 ──────────────────────────────────────
+        # ── 2F~4F 合併計算 ────────────────────────────────────────
         if floors_2f_4f:
             merged_amount = sum(b["amount"] for b in floors_2f_4f)
             merged_kwh = sum(b["kwh"] for b in floors_2f_4f)
@@ -210,7 +198,7 @@ def calculate_electricity_charges(
 
         results = []
 
-        # ── [FIX v5.5] 1F：公用電平均分攤給 1A / 1B ─────────────
+        # ── [FIX v5.5] 1F：公用電平均分攤給 1A / 1B ──────────────
         public_kwh_1f = 0
         shared_per_room_1f = 0
         if floor_1f and floor_1f["kwh"] > 0:
@@ -221,7 +209,6 @@ def calculate_electricity_charges(
             exclusive_usage_sum = sum(room_readings.get(r, 0) for r in ROOMS.EXCLUSIVE_ROOMS)
             public_kwh_1f = max(0, floor_1f["kwh"] - exclusive_usage_sum)
 
-            # 公用電按有讀數的房間數平均分攤
             exclusive_count = len(exclusive_rooms_with_reading)
             shared_per_room_1f = (
                 int(round(public_kwh_1f / exclusive_count)) if exclusive_count > 0 else 0
@@ -237,13 +224,13 @@ def calculate_electricity_charges(
                     "房號": room,
                     "類型": "獨立房間",
                     "使用度數": round(kwh, 2),
-                    "公用分攤": shared_per_room_1f,          # [FIX] 帶入分攤度數
-                    "總度數": round(total_kwh_1f, 2),        # [FIX] 含公用
+                    "公用分攤": shared_per_room_1f,
+                    "總度數": round(total_kwh_1f, 2),
                     "單價": unit_1f,
-                    "應繳金額": round(total_kwh_1f * unit_1f),  # [FIX] 含公用計費
+                    "應繳金額": round(total_kwh_1f * unit_1f),
                 })
 
-        # ── 2F~4F 各房間 ────────────────────────────────────────
+        # ── 2F~4F 各房間 ──────────────────────────────────────────
         floor_map = {r: "2F" for r in ["2A", "2B"]}
         floor_map.update({r: "3F" for r in ["3A", "3B", "3C", "3D"]})
         floor_map.update({r: "4F" for r in ["4A", "4B", "4C", "4D"]})
@@ -267,7 +254,7 @@ def calculate_electricity_charges(
         total_charge = sum(r["應繳金額"] for r in results)
         total_taipower = sum(b["amount"] for b in taipower_bills)
 
-        # ── floor_summaries ──────────────────────────────────────
+        # ── floor_summaries ───────────────────────────────────────
         floor_summaries = []
         if floor_1f:
             f1_results = [r for r in results if r["房號"] in ["1A", "1B"]]
@@ -468,7 +455,6 @@ def render_calculation_tab(
     section_header("步驟 1: 輸入台電帳單", "📄")
     st.caption("💡 1F 獨立計算（公用電由 1A/1B 平均分攤） | 2F~4F 合併計算公用電並分攤給 2A~4D")
 
-    # [v5.4] 從 DB 載入台電帳單到 session_state
     _init_taipower_input_state(period_id, elec_service)
 
     r1c1, r1c2 = st.columns(2)
@@ -500,7 +486,6 @@ def render_calculation_tab(
                 format="%.2f",
                 key=f"{floor_key}_kwh_{period_id}",
             )
-            # 同步回 state（供 rerun 後保留）
             st.session_state[amt_state_key] = amount
             st.session_state[kwh_state_key] = kwh
 
@@ -518,11 +503,9 @@ def render_calculation_tab(
             if not bills:
                 st.error("❌ 請至少輸入一個樓層的台電單")
             else:
-                # [v5.4] 寫入 DB
                 ok, msg = elec_service.save_taipower_bills(period_id, bills)
                 if ok:
                     st.session_state.setdefault("taipower_bills", {})[period_id] = bills
-                    # 清除 db_loaded flag，讓下次 rerun 重新從 DB 讀最新值
                     st.session_state.pop(f"tp_{period_id}_db_loaded", None)
                     st.success(msg)
                 else:
@@ -532,7 +515,6 @@ def render_calculation_tab(
         if st.button("🗑️ 清除台電單", type="secondary"):
             ok, msg = elec_service.delete_taipower_bills(period_id)
             if ok:
-                # 清除 session_state
                 for floor_key in FLOOR_CONFIG:
                     st.session_state.pop(f"tp_{period_id}_{floor_key}_amt", None)
                     st.session_state.pop(f"tp_{period_id}_{floor_key}_kwh", None)
@@ -715,6 +697,13 @@ def render_calculation_tab(
     if not (result and enriched_details):
         return
 
+    # [v5.5.1] 舊版 session_state 相容：calc_result 版本不符時自動清除，提示重新計算
+    if "shared_per_room_1f" not in result:
+        st.warning("⚠️ 偵測到舊版計算快取，請點擊「🚀 開始計算」重新計算以套用最新邏輯。")
+        st.session_state.pop(f"calc_result_{period_id}", None)
+        st.session_state.pop(f"calc_details_{period_id}", None)
+        return
+
     st.markdown("### 📊 計算摘要")
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("2-4F 度數", f"{result['merged_kwh']:.0f} 度")
@@ -722,11 +711,13 @@ def render_calculation_tab(
     c3.metric("每間分攤", f"{result['shared_per_room']} 度")
     c4.metric("2-4F 單價", f"${result['merged_unit_price']:.2f}/度")
 
-    # [v5.5] 1F 公用電分攤資訊
-    if result.get("public_kwh_1f", 0) > 0:
+    # [v5.5] 1F 公用電分攤資訊（安全存取）
+    public_kwh_1f = result.get("public_kwh_1f", 0)
+    shared_per_room_1f = result.get("shared_per_room_1f", 0)
+    if public_kwh_1f > 0:
         st.info(
-            f"⚡ 1F 公用電 **{result['public_kwh_1f']:.1f} 度**，"
-            f"每間分攤 **{result['shared_per_room_1f']} 度**（已含入 1A/1B 應繳金額）"
+            f"⚡ 1F 公用電 **{public_kwh_1f:.1f} 度**，"
+            f"每間分攤 **{shared_per_room_1f} 度**（已含入 1A/1B 應繳金額）"
         )
 
     st.divider()
