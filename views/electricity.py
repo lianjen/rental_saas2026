@@ -1,10 +1,11 @@
 """
-電費管理 - v5.4
-✅ v5.3 所有功能保留
-✅ [NEW v5.4] 台電帳單 DB 持久化
-    - _init_taipower_input_state: 從 DB 載入，session_state fallback
-    - 💾 儲存台電單: 同時寫入 DB (save_taipower_bills)
-    - 🗑️ 刪除台電單: 呼叫 delete_taipower_bills 並清除 session_state
+電費管理 - v5.5
+✅ v5.4 所有功能保留
+✅ [FIX v5.5] 1F 公用電正確分攤
+    - 公用電 = 台電1F度數 - 1A用電 - 1B用電
+    - 每間分攤 = int(round(公用電 / 1F有讀數房間數))
+    - 1A / 1B 的「公用分攤」、「總度數」、「應繳金額」均含公用電
+    - 收費總計 ≈ 台電1F單據（差異僅四捨五入）
 """
 
 import logging
@@ -193,6 +194,7 @@ def calculate_electricity_charges(
         floor_1f = next((b for b in taipower_bills if b["floor_label"] == "1F"), None)
         floors_2f_4f = [b for b in taipower_bills if b["floor_label"] != "1F"]
 
+        # ── 2F~4F 合併計算 ──────────────────────────────────────
         if floors_2f_4f:
             merged_amount = sum(b["amount"] for b in floors_2f_4f)
             merged_kwh = sum(b["kwh"] for b in floors_2f_4f)
@@ -208,27 +210,40 @@ def calculate_electricity_charges(
 
         results = []
 
-        # [FIX v5.3-C] 1F：計算公用電差額
+        # ── [FIX v5.5] 1F：公用電平均分攤給 1A / 1B ─────────────
         public_kwh_1f = 0
+        shared_per_room_1f = 0
         if floor_1f and floor_1f["kwh"] > 0:
             unit_1f = round(floor_1f["amount"] / floor_1f["kwh"], 2)
+            exclusive_rooms_with_reading = [
+                r for r in ROOMS.EXCLUSIVE_ROOMS if room_readings.get(r, 0) > 0
+            ]
             exclusive_usage_sum = sum(room_readings.get(r, 0) for r in ROOMS.EXCLUSIVE_ROOMS)
             public_kwh_1f = max(0, floor_1f["kwh"] - exclusive_usage_sum)
+
+            # 公用電按有讀數的房間數平均分攤
+            exclusive_count = len(exclusive_rooms_with_reading)
+            shared_per_room_1f = (
+                int(round(public_kwh_1f / exclusive_count)) if exclusive_count > 0 else 0
+            )
+
             for room in ROOMS.EXCLUSIVE_ROOMS:
                 kwh = room_readings.get(room, 0)
                 if kwh <= 0:
                     continue
+                total_kwh_1f = kwh + shared_per_room_1f
                 results.append({
                     "樓層": "1F",
                     "房號": room,
                     "類型": "獨立房間",
                     "使用度數": round(kwh, 2),
-                    "公用分攤": 0,
-                    "總度數": round(kwh, 2),
+                    "公用分攤": shared_per_room_1f,          # [FIX] 帶入分攤度數
+                    "總度數": round(total_kwh_1f, 2),        # [FIX] 含公用
                     "單價": unit_1f,
-                    "應繳金額": round(kwh * unit_1f),
+                    "應繳金額": round(total_kwh_1f * unit_1f),  # [FIX] 含公用計費
                 })
 
+        # ── 2F~4F 各房間 ────────────────────────────────────────
         floor_map = {r: "2F" for r in ["2A", "2B"]}
         floor_map.update({r: "3F" for r in ["3A", "3B", "3C", "3D"]})
         floor_map.update({r: "4F" for r in ["4A", "4B", "4C", "4D"]})
@@ -252,7 +267,7 @@ def calculate_electricity_charges(
         total_charge = sum(r["應繳金額"] for r in results)
         total_taipower = sum(b["amount"] for b in taipower_bills)
 
-        # [FIX v5.3-D] floor_summaries 補上 public_kwh
+        # ── floor_summaries ──────────────────────────────────────
         floor_summaries = []
         if floor_1f:
             f1_results = [r for r in results if r["房號"] in ["1A", "1B"]]
@@ -297,6 +312,7 @@ def calculate_electricity_charges(
             "merged_kwh": merged_kwh,
             "merged_amount": merged_amount,
             "public_kwh_1f": public_kwh_1f,
+            "shared_per_room_1f": shared_per_room_1f,
         }
 
     except Exception as e:
@@ -450,7 +466,7 @@ def render_calculation_tab(
 
     st.divider()
     section_header("步驟 1: 輸入台電帳單", "📄")
-    st.caption("💡 1F 獨立計算 | 2F~4F 合併計算公用電並分攤給 2A~4D")
+    st.caption("💡 1F 獨立計算（公用電由 1A/1B 平均分攤） | 2F~4F 合併計算公用電並分攤給 2A~4D")
 
     # [v5.4] 從 DB 載入台電帳單到 session_state
     _init_taipower_input_state(period_id, elec_service)
@@ -706,11 +722,11 @@ def render_calculation_tab(
     c3.metric("每間分攤", f"{result['shared_per_room']} 度")
     c4.metric("2-4F 單價", f"${result['merged_unit_price']:.2f}/度")
 
-    # [FIX v5.3-C] 1F 公用電提示
+    # [v5.5] 1F 公用電分攤資訊
     if result.get("public_kwh_1f", 0) > 0:
-        st.warning(
-            f"⚠️ 1F 台電度數 > 1A+1B 讀數，差額 **{result['public_kwh_1f']:.1f} 度** "
-            f"（公共走廊/設備用電，未分攤）"
+        st.info(
+            f"⚡ 1F 公用電 **{result['public_kwh_1f']:.1f} 度**，"
+            f"每間分攤 **{result['shared_per_room_1f']} 度**（已含入 1A/1B 應繳金額）"
         )
 
     st.divider()
