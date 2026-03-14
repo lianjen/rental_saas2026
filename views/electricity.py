@@ -1,11 +1,10 @@
 """
-電費管理 - v5.3
-✅ v5.2 所有功能保留
-✅ [FIX v5.3-A] 台電帳單 number_input 加 session_state 持久化，rerun 後不消失
-✅ [FIX v5.3-B] 各樓層 expander 增加公用電度數、單價、差異 metric
-✅ [FIX v5.3-C] 1F 公用電計算：台電度數 > 房間讀數時，差額顯示於摘要
-✅ [FIX v5.3-D] floor_summaries 補上 public_kwh 欄位，避免 KeyError
-✅ [FIX v5.3-E] plotly_chart use_container_width → width='stretch' (Streamlit deprecation)
+電費管理 - v5.4
+✅ v5.3 所有功能保留
+✅ [NEW v5.4] 台電帳單 DB 持久化
+    - _init_taipower_input_state: 從 DB 載入，session_state fallback
+    - 💾 儲存台電單: 同時寫入 DB (save_taipower_bills)
+    - 🗑️ 刪除台電單: 呼叫 delete_taipower_bills 並清除 session_state
 """
 
 import logging
@@ -144,17 +143,37 @@ def _to_date_safe(v) -> Optional[date]:
 
 
 # ============================================================
-# [FIX v5.3-A] 台電帳單 session_state 持久化工具
+# [v5.4] 台電帳單 session_state 持久化工具（DB 優先）
 # ============================================================
-def _init_taipower_input_state(period_id: int):
-    """確保每個 period_id 的台電輸入 state key 存在"""
+def _init_taipower_input_state(period_id: int, elec_service: ElectricityService):
+    """
+    從 DB 載入台電帳單到 session_state。
+    若 DB 無資料，則以 0 初始化（不覆蓋已存在的 state key）。
+    """
+    db_loaded_key = f"tp_{period_id}_db_loaded"
+    if st.session_state.get(db_loaded_key):
+        return  # 同一 period 已載入過，避免每次 rerun 都查 DB
+
+    db_bills = elec_service.get_taipower_bills(period_id)
+    db_map = {b["floor_label"]: b for b in db_bills}
+
     for floor_key in FLOOR_CONFIG:
         amt_key = f"tp_{period_id}_{floor_key}_amt"
         kwh_key = f"tp_{period_id}_{floor_key}_kwh"
-        if amt_key not in st.session_state:
-            st.session_state[amt_key] = 0
-        if kwh_key not in st.session_state:
-            st.session_state[kwh_key] = 0.0
+        if floor_key in db_map:
+            st.session_state[amt_key] = int(db_map[floor_key]["amount"])
+            st.session_state[kwh_key] = float(db_map[floor_key]["kwh"])
+        else:
+            if amt_key not in st.session_state:
+                st.session_state[amt_key] = 0
+            if kwh_key not in st.session_state:
+                st.session_state[kwh_key] = 0.0
+
+    # 若 DB 有資料，同步到 taipower_bills session cache
+    if db_bills:
+        st.session_state.setdefault("taipower_bills", {})[period_id] = db_bills
+
+    st.session_state[db_loaded_key] = True
 
 
 def _get_taipower_input_value(period_id: int, floor_key: str, field: str):
@@ -433,8 +452,8 @@ def render_calculation_tab(
     section_header("步驟 1: 輸入台電帳單", "📄")
     st.caption("💡 1F 獨立計算 | 2F~4F 合併計算公用電並分攤給 2A~4D")
 
-    # [FIX v5.3-A] 初始化持久化 state
-    _init_taipower_input_state(period_id)
+    # [v5.4] 從 DB 載入台電帳單到 session_state
+    _init_taipower_input_state(period_id, elec_service)
 
     r1c1, r1c2 = st.columns(2)
     r2c1, r2c2 = st.columns(2)
@@ -471,17 +490,43 @@ def render_calculation_tab(
 
             floor_data[floor_key] = {"amount": amount, "kwh": kwh}
 
-    if st.button("💾 儲存台電單", type="primary"):
-        bills = [
-            {"floor_label": k, "amount": v["amount"], "kwh": v["kwh"]}
-            for k, v in floor_data.items()
-            if v["amount"] > 0 or v["kwh"] > 0
-        ]
-        if not bills:
-            st.error("❌ 請至少輸入一個樓層的台電單")
-        else:
-            st.session_state.setdefault("taipower_bills", {})[period_id] = bills
-            st.success(f"✅ 已儲存 {len(bills)} 個台電單")
+    col_save, col_del = st.columns([2, 1])
+
+    with col_save:
+        if st.button("💾 儲存台電單", type="primary"):
+            bills = [
+                {"floor_label": k, "amount": v["amount"], "kwh": v["kwh"]}
+                for k, v in floor_data.items()
+                if v["amount"] > 0 or v["kwh"] > 0
+            ]
+            if not bills:
+                st.error("❌ 請至少輸入一個樓層的台電單")
+            else:
+                # [v5.4] 寫入 DB
+                ok, msg = elec_service.save_taipower_bills(period_id, bills)
+                if ok:
+                    st.session_state.setdefault("taipower_bills", {})[period_id] = bills
+                    # 清除 db_loaded flag，讓下次 rerun 重新從 DB 讀最新值
+                    st.session_state.pop(f"tp_{period_id}_db_loaded", None)
+                    st.success(msg)
+                else:
+                    st.error(msg)
+
+    with col_del:
+        if st.button("🗑️ 清除台電單", type="secondary"):
+            ok, msg = elec_service.delete_taipower_bills(period_id)
+            if ok:
+                # 清除 session_state
+                for floor_key in FLOOR_CONFIG:
+                    st.session_state.pop(f"tp_{period_id}_{floor_key}_amt", None)
+                    st.session_state.pop(f"tp_{period_id}_{floor_key}_kwh", None)
+                st.session_state.pop(f"tp_{period_id}_db_loaded", None)
+                bills_cache = st.session_state.get("taipower_bills", {})
+                bills_cache.pop(period_id, None)
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
 
     saved_bills = st.session_state.get("taipower_bills", {}).get(period_id)
     if saved_bills:
@@ -609,7 +654,7 @@ def render_calculation_tab(
         raw = st.session_state.get("raw_readings", {}).get(period_id)
 
         if not bills:
-            st.error("❌ 請先輸入台電帳單")
+            st.error("❌ 請先輸入並儲存台電帳單")
             return
         if not readings or all(v == 0 for v in readings.values()):
             st.error("❌ 請先輸入房間讀數")
@@ -677,11 +722,9 @@ def render_calculation_tab(
             f"**{fs['floor']}** - 台電: ${fs['bill_amount']:,} | 收費: ${fs['total_charge']:,} {diff_color}",
             expanded=True,
         ):
-            # [FIX v5.3-B] 完整四欄 metric
             col1, col2, col3, col4 = st.columns(4)
             col1.metric("台電度數", f"{fs['bill_kwh']:.0f} 度")
             col2.metric("房間用電", f"{fs['room_kwh']:.0f} 度")
-            # [FIX v5.3-D] 安全讀取 public_kwh
             pub_kwh = fs.get("public_kwh", 0)
             col3.metric("公用/差額", f"{pub_kwh:.1f} 度")
             col4.metric("單價", f"${fs['unit_price']:.2f}/度")
@@ -1011,7 +1054,6 @@ def render_statistics_tab(elec_service: ElectricityService):
             ),
             bargap=0.35,
         )
-        # [FIX v5.3-E] use_container_width → width='stretch'
         st.plotly_chart(fig, width="stretch")
 
     else:
@@ -1093,7 +1135,6 @@ def render_statistics_tab(elec_service: ElectricityService):
                 bargap=0.15,
                 bargroupgap=0.05,
             )
-            # [FIX v5.3-E] use_container_width → width='stretch'
             st.plotly_chart(fig2, width="stretch")
 
         else:
