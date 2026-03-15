@@ -36,6 +36,10 @@ PaymentReminderService = _optional_import(
     "PaymentReminderService",
 )
 ElectricityService = _optional_import("services.electricity_service", "ElectricityService")
+ElectricityBillingService = _optional_import(
+    "services.electricity_service",
+    "ElectricityBillingService",
+)
 ExpenseService = _optional_import("services.expense_service", "ExpenseService")
 SystemService = _optional_import("services.system_service", "SystemService")
 ElectricityCalculator = _optional_import(
@@ -52,6 +56,7 @@ __all__ = [
     "PaymentCollectionService",
     "PaymentReminderService",
     "ElectricityService",
+    "ElectricityBillingService",
     "ExpenseService",
     "SystemService",
     "ElectricityCalculator",
