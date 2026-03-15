@@ -1,9 +1,10 @@
 """
-電費管理 - v5.6.0
+電費管理 - v5.6.1
 ✅ v5.5.3 所有功能保留
 ✅ [NEW v5.6.0] 抽出 ElectricityCalculator 純函數，供 pytest 單元測試
 ✅ [FIX v5.5.3] fallback data_table: use_container_width=True → width="stretch"
     - 消除 Streamlit DeprecationWarning (will be removed after 2025-12-31)
+✅ [NEW v5.6.1] dashboard CTA 可預設開啟「計算電費」Tab
 """
 
 import logging
@@ -12,6 +13,7 @@ from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
+from utils import navigation_state
 
 try:
     import plotly.graph_objects as go
@@ -1297,13 +1299,26 @@ def render():
     elec_service = ElectricityService()
     notify_service = NotificationService()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab_labels = [
         "📅 計費期間",
         "🧮 計算電費",
         "📜 繳費記錄",
         "📊 用電統計",
         "💰 電費預收帳",
-    ])
+    ]
+    default_tab = navigation_state.resolve_default_label(
+        tab_labels,
+        navigation_state.pop_string_state(
+            navigation_state.ELECTRICITY_DEFAULT_TAB_STATE,
+            tab_labels[0],
+        ),
+        tab_labels[0],
+    )
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(
+        tab_labels,
+        default=default_tab,
+        key=navigation_state.ELECTRICITY_TABS_KEY,
+    )
 
     with tab1:
         render_period_tab(elec_service)

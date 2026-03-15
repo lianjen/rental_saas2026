@@ -1,5 +1,5 @@
 """
-租金管理頁面 v3.3
+租金管理頁面 v3.4
 ✅ 完全移除 db 依賴
 ✅ 使用正確的 Service 方法
 ✅ 優化錯誤處理
@@ -7,6 +7,7 @@
 ✅ [FIX] tenant_name → name, base_rent → rent (對齊 tenant_service v5.3)
 ✅ [FIX v3.2] use_container_width → width="stretch" (移除棄用警告)
 ✅ [FIX v3.3] st.progress Decimal 型別錯誤修正 (Decimal → float)
+✅ [NEW v3.4] dashboard CTA 可預設 tab 與收款篩選
 """
 import streamlit as st
 from datetime import datetime, date
@@ -17,6 +18,7 @@ from services.tenant_service import TenantService
 from typing import List, Dict
 import pandas as pd
 import logging
+from utils import navigation_state
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +66,25 @@ def render_rent_page():
     payment_service = PaymentService()
     tenant_service = TenantService()
 
-    tab1, tab2, tab3, tab4 = st.tabs([
+    tab_labels = [
         "📅 批量建立排程",
         "📊 本月摘要",
         "💳 收款管理",
         "📈 報表分析"
-    ])
+    ]
+    default_tab = navigation_state.resolve_default_label(
+        tab_labels,
+        navigation_state.pop_string_state(
+            navigation_state.RENT_DEFAULT_TAB_STATE,
+            tab_labels[0],
+        ),
+        tab_labels[0],
+    )
+    tab1, tab2, tab3, tab4 = st.tabs(
+        tab_labels,
+        default=default_tab,
+        key=navigation_state.RENT_TABS_KEY,
+    )
 
     with tab1:
         render_batch_schedule_tab(payment_service, tenant_service)
@@ -574,10 +589,21 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
     col1, col2 = st.columns([3, 3])
 
     with col1:
+        filter_options = ["全部", "未繳", "已繳", "逾期"]
+        default_filter = navigation_state.resolve_default_label(
+            filter_options,
+            navigation_state.pop_string_state(
+                navigation_state.RENT_DEFAULT_STATUS_FILTER_STATE,
+                navigation_state.RENT_STATUS_ALL,
+            ),
+            navigation_state.RENT_STATUS_ALL,
+        )
         status_filter = st.radio(
             "篩選狀態",
-            ["全部", "未繳", "已繳", "逾期"],
-            horizontal=True
+            filter_options,
+            index=filter_options.index(default_filter),
+            horizontal=True,
+            key=navigation_state.RENT_STATUS_FILTER_KEY,
         )
 
     with col2:
@@ -587,7 +613,7 @@ def render_payment_management_tab(payment_service: PaymentService, tenant_servic
             selected_room = st.selectbox(
                 "🏠 房號篩選",
                 options=["全部"] + room_list,
-                key="management_room_filter"
+                key=navigation_state.RENT_ROOM_FILTER_KEY
             )
         except Exception as e:
             st.error(f"❌ 載入房間列表失敗: {str(e)}")
