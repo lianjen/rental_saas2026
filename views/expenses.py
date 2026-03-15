@@ -16,6 +16,7 @@ from datetime import date
 import logging
 
 from services.expense_service import ExpenseService
+from utils.session_keys import SessionKeys
 
 try:
     from components.cards import section_header, metric_card, empty_state, data_table
@@ -55,7 +56,7 @@ COLUMN_DISPLAY_MAP = {
 
 # ── 取得 user_id ─────────────────────────────────────────
 def _get_user_id() -> str | None:
-    for key in ("user_id", "uid", "auth_user_id"):
+    for key in (SessionKeys.USER_ID, "uid", "auth_user_id"):
         uid = st.session_state.get(key)
         if uid:
             return uid
@@ -86,8 +87,8 @@ def render_add_tab(expense_service: ExpenseService):
     section_header("新增支出", "➕")
 
     # 無說明確認流程（form 外）
-    if st.session_state.get("pending_expense_no_desc"):
-        pending = st.session_state.pending_expense_no_desc
+    if st.session_state.get(SessionKeys.PENDING_EXPENSE_NO_DESC):
+        pending = st.session_state[SessionKeys.PENDING_EXPENSE_NO_DESC]
         st.warning(
             f"⚠️ 說明欄位為空，確定要新增嗎？\n\n"
             f"**{pending['date']} ｜ {pending['category']} ｜ ${int(pending['amount']):,}**"
@@ -109,13 +110,13 @@ def render_add_tab(expense_service: ExpenseService):
                 if ok:
                     st.success("✅ 新增成功")
                     st.balloons()
-                    del st.session_state.pending_expense_no_desc
+                    del st.session_state[SessionKeys.PENDING_EXPENSE_NO_DESC]
                     st.rerun()
                 else:
                     st.error(f"❌ 新增失敗: {msg}")
         with col_no:
             if st.button("❌ 取消", key="confirm_add_no", width="stretch"):
-                del st.session_state.pending_expense_no_desc
+                del st.session_state[SessionKeys.PENDING_EXPENSE_NO_DESC]
                 st.rerun()
         return
 
@@ -144,7 +145,7 @@ def render_add_tab(expense_service: ExpenseService):
             if amount <= 0:
                 st.error("⚠️ 請輸入有效金額（必須 > 0）")
             elif not description.strip():
-                st.session_state.pending_expense_no_desc = {
+                st.session_state[SessionKeys.PENDING_EXPENSE_NO_DESC] = {
                     "date":     expense_date.isoformat(),
                     "category": category,
                     "amount":   amount,
@@ -323,7 +324,7 @@ def render_list_tab(expense_service: ExpenseService):
             # ── 刪除區 ────────────────────────────────────
             with col_delete:
                 st.write(""); st.write(""); st.write("")
-                confirm_key = f"confirm_delete_{selected_id}"
+                confirm_key = SessionKeys.confirm_delete(selected_id)
                 if st.button("🗑️ 刪除", type="secondary", key="delete_btn", width="stretch"):
                     if not st.session_state.get(confirm_key):
                         st.session_state[confirm_key] = True

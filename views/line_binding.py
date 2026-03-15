@@ -15,6 +15,7 @@ import streamlit as st
 
 from services.tenant_service import TenantService
 from services.tenant_contact_service import TenantContactService
+from utils.session_keys import SessionKeys
 
 logger = logging.getLogger(__name__)
 
@@ -107,23 +108,23 @@ def render_binding_overview(tenant_svc: TenantService, contact_svc: TenantContac
 
     with col1:
         if st.button("✅ 已驗證綁定", key="filter_bound", use_container_width=True, type="primary"):
-            st.session_state.line_filter = "bound"
+            st.session_state[SessionKeys.LINE_FILTER] = "bound"
             st.rerun()
 
     with col2:
         if st.button("📭 未驗證 / 未綁定", key="filter_unbound", use_container_width=True):
-            st.session_state.line_filter = "unbound"
+            st.session_state[SessionKeys.LINE_FILTER] = "unbound"
             st.rerun()
 
     with col3:
         if st.button("🔄 全部", key="filter_all", use_container_width=True):
-            st.session_state.line_filter = "all"
+            st.session_state[SessionKeys.LINE_FILTER] = "all"
             st.rerun()
 
-    if "line_filter" not in st.session_state:
-        st.session_state.line_filter = "all"
+    if SessionKeys.LINE_FILTER not in st.session_state:
+        st.session_state[SessionKeys.LINE_FILTER] = "all"
 
-    current_filter = st.session_state.line_filter
+    current_filter = st.session_state[SessionKeys.LINE_FILTER]
 
     st.divider()
 

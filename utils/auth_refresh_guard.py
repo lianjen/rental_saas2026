@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import Optional
 
 import streamlit as st
+from utils.session_keys import SessionKeys
 
 logger = logging.getLogger(__name__)
 
@@ -18,9 +19,9 @@ logger = logging.getLogger(__name__)
 class AuthRefreshGuard:
     """記錄最近一次失敗的 refresh_token，避免重複刷新。"""
 
-    FAILED_TOKEN_HASH_KEY = "_failed_refresh_token_hash"
-    FAILED_SOURCE_KEY = "_failed_refresh_source"
-    FAILED_AT_KEY = "_failed_refresh_at"
+    FAILED_TOKEN_HASH_KEY = SessionKeys.FAILED_REFRESH_TOKEN_HASH
+    FAILED_SOURCE_KEY = SessionKeys.FAILED_REFRESH_SOURCE
+    FAILED_AT_KEY = SessionKeys.FAILED_REFRESH_AT
 
     @staticmethod
     def _hash_token(refresh_token: str) -> str:

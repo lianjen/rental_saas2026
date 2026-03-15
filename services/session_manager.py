@@ -7,6 +7,8 @@ from typing import Optional, Dict
 from datetime import datetime
 import logging
 
+from utils.session_keys import SessionKeys
+
 logger = logging.getLogger(__name__)
 
 
@@ -14,15 +16,15 @@ class SessionManager:
     """Streamlit Session State 統一管理器"""
     
     # 會話鍵值常量（防止打錯字）
-    AUTHENTICATED = "authenticated"
-    USER_ID = "user_id"
-    USER_EMAIL = "user_email"
-    USER_NAME = "user_name"
-    USER_ROLE = "user_role"
-    ACCESS_TOKEN = "access_token"
-    REFRESH_TOKEN = "refresh_token"
-    LOGIN_TIME = "login_time"
-    EXPIRES_AT = "expires_at"
+    AUTHENTICATED = SessionKeys.AUTHENTICATED_LEGACY
+    USER_ID = SessionKeys.USER_ID
+    USER_EMAIL = SessionKeys.USER_EMAIL
+    USER_NAME = SessionKeys.USER_NAME
+    USER_ROLE = SessionKeys.USER_ROLE
+    ACCESS_TOKEN = SessionKeys.ACCESS_TOKEN
+    REFRESH_TOKEN = SessionKeys.REFRESH_TOKEN
+    LOGIN_TIME = SessionKeys.LOGIN_TIME
+    EXPIRES_AT = SessionKeys.EXPIRES_AT
     
     @staticmethod
     def init():

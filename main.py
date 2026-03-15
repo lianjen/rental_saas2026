@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import streamlit as st
 
 from utils.sentry_setup import init_sentry
+from utils.session_keys import SessionKeys
 
 # ============================================
 # 0. Environment Variables
@@ -198,8 +199,8 @@ def _try_restore_from_cookie() -> bool:
 def _sync_cookie() -> None:
     try:
         from utils.cookie_manager import save_auth_cookie, load_auth_cookie
-        at = st.session_state.get("access_token",  "")
-        rt = st.session_state.get("refresh_token", "")
+        at = st.session_state.get(SessionKeys.ACCESS_TOKEN, "")
+        rt = st.session_state.get(SessionKeys.REFRESH_TOKEN, "")
         if not at or not rt:
             return
         cookie = load_auth_cookie()
@@ -229,7 +230,7 @@ def handle_session_refresh() -> bool:
             return True
 
         auth_service  = AuthService()
-        refresh_token = st.session_state.get("refresh_token")
+        refresh_token = st.session_state.get(SessionKeys.REFRESH_TOKEN)
         if not refresh_token:
             return False
         if AuthRefreshGuard.is_blocked(refresh_token):
@@ -238,10 +239,10 @@ def handle_session_refresh() -> bool:
 
         new_session = auth_service.refresh_session(refresh_token)
         if new_session:
-            st.session_state["access_token"]  = new_session["access_token"]
-            st.session_state["refresh_token"] = new_session["refresh_token"]
-            st.session_state["expires_at"]    = new_session.get("expires_at")
-            st.session_state["last_activity"] = datetime.now()
+            st.session_state[SessionKeys.ACCESS_TOKEN] = new_session["access_token"]
+            st.session_state[SessionKeys.REFRESH_TOKEN] = new_session["refresh_token"]
+            st.session_state[SessionKeys.EXPIRES_AT] = new_session.get("expires_at")
+            st.session_state[SessionKeys.LAST_ACTIVITY] = datetime.now()
             from utils.cookie_manager import save_auth_cookie
             save_auth_cookie(new_session["access_token"], new_session["refresh_token"])
             AuthRefreshGuard.clear()
@@ -279,14 +280,14 @@ def check_page_permission(page_name: str) -> bool:
 # 各頁面可能殘留的 pending / confirm state keys，切頁時全部清除
 _PAGE_PENDING_KEYS = [
     # 支出記錄
-    "pending_expense_no_desc",
-    "confirm_delete_expense",
+    SessionKeys.PENDING_EXPENSE_NO_DESC,
+    SessionKeys.CONFIRM_DELETE_EXPENSE,
     # 房客管理
-    "confirm_delete",
+    SessionKeys.CONFIRM_DELETE_GENERIC,
     # 租金管理
-    "confirm_delete_rent",
+    SessionKeys.CONFIRM_DELETE_RENT,
     # 電費管理
-    "confirm_delete_elec",
+    SessionKeys.CONFIRM_DELETE_ELEC,
     # 其他可能的確認 key（prefix 方式在下方動態清除）
 ]
 
@@ -298,9 +299,9 @@ def _on_nav_change() -> None:
     比頁面內容早 → 立即把新頁面寫入 current_menu，
     並清除所有頁面 pending state，讓頁面內的 st.rerun() 無法蓋回舊值。
     """
-    new_page = st.session_state.get("_sidebar_radio")
+    new_page = st.session_state.get(SessionKeys.SIDEBAR_RADIO)
     if new_page:
-        st.session_state["current_menu"] = new_page
+        st.session_state[SessionKeys.CURRENT_MENU] = new_page
         logger.debug(f"🧭 導航切換 → {new_page}")
 
     # 清除靜態 pending keys
@@ -309,7 +310,10 @@ def _on_nav_change() -> None:
             del st.session_state[k]
 
     # 動態清除 confirm_delete_{id} 格式的 key
-    to_del = [k for k in st.session_state if k.startswith("confirm_delete_")]
+    confirm_delete_prefix = SessionKeys.confirm_delete("")
+    to_del = [
+        key for key in st.session_state if str(key).startswith(confirm_delete_prefix)
+    ]
     for k in to_del:
         del st.session_state[k]
 
@@ -416,7 +420,7 @@ def render_user_card() -> None:
         else:
             st.caption("🏷️ 角色: 👤 用戶")
 
-        login_time = st.session_state.get("login_time")
+        login_time = st.session_state.get(SessionKeys.LOGIN_TIME)
         if login_time:
             try:
                 if isinstance(login_time, str):
@@ -426,7 +430,7 @@ def render_user_card() -> None:
             except Exception:
                 pass
 
-        expires_dt = _parse_expires_at(st.session_state.get("expires_at"))
+        expires_dt = _parse_expires_at(st.session_state.get(SessionKeys.EXPIRES_AT))
         if expires_dt:
             try:
                 rem = (expires_dt - datetime.now(tz=timezone.utc)).total_seconds()
@@ -477,16 +481,16 @@ def render_menu() -> None:
         menu_items.extend(["⚙️ 系統設定", "👨‍💼 用戶管理"])
 
     # current_menu 作為唯一真相來源
-    current = st.session_state.get("current_menu", menu_items[0])
+    current = st.session_state.get(SessionKeys.CURRENT_MENU, menu_items[0])
     if current not in menu_items:
         current = menu_items[0]
-        st.session_state["current_menu"] = current
+        st.session_state[SessionKeys.CURRENT_MENU] = current
 
     st.radio(
         "功能選單",
         options    = menu_items,
         index      = menu_items.index(current),
-        key        = "_sidebar_radio",       # ✅ 獨立 key，不覆蓋 current_menu
+        key        = SessionKeys.SIDEBAR_RADIO,  # ✅ 獨立 key，不覆蓋 current_menu
         on_change  = _on_nav_change,         # ✅ 點擊立即生效，不被頁面 rerun 蓋掉
         label_visibility = "collapsed",
     )
@@ -517,7 +521,7 @@ def render_system_status(db_healthy: bool) -> None:
 
 def render_main_content() -> None:
     # ✅ 唯一真相來源：current_menu（由 on_change 寫入）
-    menu = st.session_state.get("current_menu", "📊 儀表板")
+    menu = st.session_state.get(SessionKeys.CURRENT_MENU, "📊 儀表板")
     if not check_page_permission(menu):
         st.error("❌ 權限不足")
         return
@@ -558,7 +562,7 @@ def load_page_module(page_module: str) -> None:
         if APP_CONFIG["dev_mode"]:
             st.exception(e)
         if st.button("🔙 返回儀表板", key="btn_back_import_err"):
-            st.session_state["current_menu"] = "📊 儀表板"
+            st.session_state[SessionKeys.CURRENT_MENU] = "📊 儀表板"
             st.rerun()
     except Exception as e:
         st.error("❌ 載入頁面失敗")
@@ -566,7 +570,7 @@ def load_page_module(page_module: str) -> None:
         if APP_CONFIG["dev_mode"]:
             st.exception(e)
         if st.button("🔙 返回儀表板", key="btn_back_render_err"):
-            st.session_state["current_menu"] = "📊 儀表板"
+            st.session_state[SessionKeys.CURRENT_MENU] = "📊 儀表板"
             st.rerun()
 
 

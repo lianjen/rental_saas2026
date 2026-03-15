@@ -14,6 +14,7 @@ import logging
 from services.payment_service import PaymentService
 from services.electricity_service import ElectricityService
 from services.tenant_service import TenantService
+from utils.session_keys import SessionKeys
 
 logger = logging.getLogger(__name__)
 
@@ -72,28 +73,28 @@ def render_rent_tracking(payment_service: PaymentService, tenant_service: Tenant
     with col1:
         if st.button("🚨 逾期未繳", key="rent_overdue",
                      use_container_width=True, type="primary"):   # ✅ FIX 1
-            st.session_state.rent_filter = "overdue"
+            st.session_state[SessionKeys.TRACKING_RENT_FILTER] = "overdue"
             st.rerun()
     with col2:
         if st.button("⚠️ 即將到期", key="rent_upcoming",
                      use_container_width=True):                   # ✅ FIX 2
-            st.session_state.rent_filter = "upcoming"
+            st.session_state[SessionKeys.TRACKING_RENT_FILTER] = "upcoming"
             st.rerun()
     with col3:
         if st.button("⏳ 全部未繳", key="rent_unpaid",
                      use_container_width=True):                   # ✅ FIX 3
-            st.session_state.rent_filter = "unpaid"
+            st.session_state[SessionKeys.TRACKING_RENT_FILTER] = "unpaid"
             st.rerun()
     with col4:
         if st.button("🔄 重置", key="rent_reset",
                      use_container_width=True):                   # ✅ FIX 4
-            st.session_state.rent_filter = "all"
+            st.session_state[SessionKeys.TRACKING_RENT_FILTER] = "all"
             st.rerun()
 
-    if "rent_filter" not in st.session_state:
-        st.session_state.rent_filter = "all"
+    if SessionKeys.TRACKING_RENT_FILTER not in st.session_state:
+        st.session_state[SessionKeys.TRACKING_RENT_FILTER] = "all"
 
-    current_filter = st.session_state.rent_filter
+    current_filter = st.session_state[SessionKeys.TRACKING_RENT_FILTER]
     st.divider()
 
     # 房號篩選
@@ -239,23 +240,23 @@ def render_electricity_tracking(
     with col1:
         if st.button("⏳ 未繳電費", key="elec_unpaid",
                      use_container_width=True, type="primary"):   # ✅ FIX 7
-            st.session_state.elec_filter = "unpaid"; st.rerun()
+            st.session_state[SessionKeys.TRACKING_ELEC_FILTER] = "unpaid"; st.rerun()
     with col2:
         if st.button("✅ 已繳電費", key="elec_paid",
                      use_container_width=True):                   # ✅ FIX 8
-            st.session_state.elec_filter = "paid"; st.rerun()
+            st.session_state[SessionKeys.TRACKING_ELEC_FILTER] = "paid"; st.rerun()
     with col3:
         if st.button("📜 全部電費", key="elec_all",
                      use_container_width=True):                   # ✅ FIX 9
-            st.session_state.elec_filter = "all"; st.rerun()
+            st.session_state[SessionKeys.TRACKING_ELEC_FILTER] = "all"; st.rerun()
     with col4:
         if st.button("🔄 重置", key="elec_reset",
                      use_container_width=True):                   # ✅ FIX 10
-            st.session_state.elec_filter = "unpaid"; st.rerun()
+            st.session_state[SessionKeys.TRACKING_ELEC_FILTER] = "unpaid"; st.rerun()
 
-    if "elec_filter" not in st.session_state:
-        st.session_state.elec_filter = "unpaid"
-    current_filter = st.session_state.elec_filter
+    if SessionKeys.TRACKING_ELEC_FILTER not in st.session_state:
+        st.session_state[SessionKeys.TRACKING_ELEC_FILTER] = "unpaid"
+    current_filter = st.session_state[SessionKeys.TRACKING_ELEC_FILTER]
 
     st.divider()
 

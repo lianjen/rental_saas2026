@@ -13,6 +13,7 @@ import logging
 from typing import Optional, Dict
 
 import streamlit as st
+from utils.session_keys import SessionKeys
 
 logger = logging.getLogger(__name__)
 
@@ -24,14 +25,14 @@ _MAX_AGE    = 60 * 60 * 24 * 7  # 7 天，單位：秒
 
 def _get_controller():
     """取得 CookieController 單例（儲在 session_state 避免重建）"""
-    if "__cookie_ctrl" not in st.session_state:
+    if SessionKeys.COOKIE_CONTROLLER not in st.session_state:
         try:
             from streamlit_cookies_controller import CookieController
-            st.session_state["__cookie_ctrl"] = CookieController()
+            st.session_state[SessionKeys.COOKIE_CONTROLLER] = CookieController()
         except ImportError:
             logger.error("❌ streamlit-cookies-controller 未安裝，請執行: pip install streamlit-cookies-controller")
             return None
-    return st.session_state["__cookie_ctrl"]
+    return st.session_state[SessionKeys.COOKIE_CONTROLLER]
 
 
 def _encode(value: str) -> str:

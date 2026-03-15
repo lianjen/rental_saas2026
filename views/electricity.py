@@ -14,6 +14,7 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 from utils import navigation_state
+from utils.session_keys import SessionKeys
 
 try:
     import plotly.graph_objects as go
@@ -144,7 +145,7 @@ def _to_date_safe(v) -> Optional[date]:
 # [v5.4] 台電帳單 session_state 持久化工具（DB 優先）
 # ============================================================
 def _init_taipower_input_state(period_id: int, elec_service: ElectricityService):
-    db_loaded_key = f"tp_{period_id}_db_loaded"
+    db_loaded_key = SessionKeys.taipower_db_loaded(period_id)
     if st.session_state.get(db_loaded_key):
         return
 
@@ -152,8 +153,8 @@ def _init_taipower_input_state(period_id: int, elec_service: ElectricityService)
     db_map = {b["floor_label"]: b for b in db_bills}
 
     for floor_key in FLOOR_CONFIG:
-        amt_key = f"tp_{period_id}_{floor_key}_amt"
-        kwh_key = f"tp_{period_id}_{floor_key}_kwh"
+        amt_key = SessionKeys.taipower_amount(period_id, floor_key)
+        kwh_key = SessionKeys.taipower_kwh(period_id, floor_key)
         if floor_key in db_map:
             st.session_state[amt_key] = int(db_map[floor_key]["amount"])
             st.session_state[kwh_key] = float(db_map[floor_key]["kwh"])
@@ -164,13 +165,17 @@ def _init_taipower_input_state(period_id: int, elec_service: ElectricityService)
                 st.session_state[kwh_key] = 0.0
 
     if db_bills:
-        st.session_state.setdefault("taipower_bills", {})[period_id] = db_bills
+        st.session_state.setdefault(SessionKeys.TAIPOWER_BILLS, {})[period_id] = db_bills
 
     st.session_state[db_loaded_key] = True
 
 
 def _get_taipower_input_value(period_id: int, floor_key: str, field: str):
-    key = f"tp_{period_id}_{floor_key}_{field}"
+    key = (
+        SessionKeys.taipower_amount(period_id, floor_key)
+        if field == "amt"
+        else SessionKeys.taipower_kwh(period_id, floor_key)
+    )
     return st.session_state.get(key, 0 if field == "amt" else 0.0)
 
 
@@ -267,7 +272,7 @@ def render_period_tab(elec_service: ElectricityService):
                 )
                 if ok:
                     st.success(msg)
-                    st.session_state.current_period_id = period_id
+                    st.session_state[SessionKeys.CURRENT_PERIOD_ID] = period_id
                     st.rerun()
                 else:
                     st.error(msg)
@@ -288,7 +293,7 @@ def render_period_tab(elec_service: ElectricityService):
         return
 
     period_id = period_options[selected]
-    st.session_state.current_period_id = period_id
+    st.session_state[SessionKeys.CURRENT_PERIOD_ID] = period_id
     period_info = elec_service.get_period_by_id(period_id)
 
     st.divider()
@@ -326,17 +331,17 @@ def render_period_tab(elec_service: ElectricityService):
     col_del, col_info = st.columns([1, 3])
     with col_del:
         if st.button("🗑️ 刪除期間", type="secondary"):
-            if st.session_state.get("confirm_delete_period"):
+            if st.session_state.get(SessionKeys.CONFIRM_DELETE_PERIOD):
                 ok, msg = elec_service.delete_period(period_id)
                 if ok:
                     st.success(msg)
-                    st.session_state.pop("current_period_id", None)
-                    st.session_state.pop("confirm_delete_period", None)
+                    st.session_state.pop(SessionKeys.CURRENT_PERIOD_ID, None)
+                    st.session_state.pop(SessionKeys.CONFIRM_DELETE_PERIOD, None)
                     st.rerun()
                 else:
                     st.error(msg)
             else:
-                st.session_state.confirm_delete_period = True
+                st.session_state[SessionKeys.CONFIRM_DELETE_PERIOD] = True
                 st.warning("⚠️ 再按一次確認刪除")
     with col_info:
         st.info(f"✅ 當前選中: ID {period_id}")
@@ -349,11 +354,11 @@ def render_calculation_tab(
     elec_service: ElectricityService,
     notify_service: NotificationService,
 ):
-    if "current_period_id" not in st.session_state:
+    if SessionKeys.CURRENT_PERIOD_ID not in st.session_state:
         info_card("請先選擇期間", "請前往「計費期間」Tab 選擇一個期間", "⚠️", "warning")
         return
 
-    period_id = st.session_state.current_period_id
+    period_id = st.session_state[SessionKeys.CURRENT_PERIOD_ID]
     st.info(f"📅 當前期間 ID: {period_id}")
 
     existing = elec_service.get_payment_record(period_id)
@@ -377,8 +382,8 @@ def render_calculation_tab(
             badge = "🔒 獨立" if config["is_independent"] else "🔗 分攤"
             st.caption(f"{badge}: {', '.join(config['rooms'])}")
 
-            amt_state_key = f"tp_{period_id}_{floor_key}_amt"
-            kwh_state_key = f"tp_{period_id}_{floor_key}_kwh"
+            amt_state_key = SessionKeys.taipower_amount(period_id, floor_key)
+            kwh_state_key = SessionKeys.taipower_kwh(period_id, floor_key)
 
             amount = st.number_input(
                 "金額 (元)",
@@ -414,8 +419,8 @@ def render_calculation_tab(
             else:
                 ok, msg = elec_service.save_taipower_bills(period_id, bills)
                 if ok:
-                    st.session_state.setdefault("taipower_bills", {})[period_id] = bills
-                    st.session_state.pop(f"tp_{period_id}_db_loaded", None)
+                    st.session_state.setdefault(SessionKeys.TAIPOWER_BILLS, {})[period_id] = bills
+                    st.session_state.pop(SessionKeys.taipower_db_loaded(period_id), None)
                     st.success(msg)
                 else:
                     st.error(msg)
@@ -425,17 +430,17 @@ def render_calculation_tab(
             ok, msg = elec_service.delete_taipower_bills(period_id)
             if ok:
                 for floor_key in FLOOR_CONFIG:
-                    st.session_state.pop(f"tp_{period_id}_{floor_key}_amt", None)
-                    st.session_state.pop(f"tp_{period_id}_{floor_key}_kwh", None)
-                st.session_state.pop(f"tp_{period_id}_db_loaded", None)
-                bills_cache = st.session_state.get("taipower_bills", {})
+                    st.session_state.pop(SessionKeys.taipower_amount(period_id, floor_key), None)
+                    st.session_state.pop(SessionKeys.taipower_kwh(period_id, floor_key), None)
+                st.session_state.pop(SessionKeys.taipower_db_loaded(period_id), None)
+                bills_cache = st.session_state.get(SessionKeys.TAIPOWER_BILLS, {})
                 bills_cache.pop(period_id, None)
                 st.success(msg)
                 st.rerun()
             else:
                 st.error(msg)
 
-    saved_bills = st.session_state.get("taipower_bills", {}).get(period_id)
+    saved_bills = st.session_state.get(SessionKeys.TAIPOWER_BILLS, {}).get(period_id)
     if saved_bills:
         bill_1f = next((b for b in saved_bills if b["floor_label"] == "1F"), None)
         bills_2f_4f = [b for b in saved_bills if b["floor_label"] != "1F"]
@@ -550,15 +555,15 @@ def render_calculation_tab(
 
         st.divider()
 
-    st.session_state.setdefault("room_readings", {})[period_id] = room_readings
-    st.session_state.setdefault("raw_readings", {})[period_id] = raw_readings
+    st.session_state.setdefault(SessionKeys.ROOM_READINGS, {})[period_id] = room_readings
+    st.session_state.setdefault(SessionKeys.RAW_READINGS, {})[period_id] = raw_readings
     st.divider()
 
     section_header("步驟 3: 計算電費", "🧮")
     if st.button("🚀 開始計算", type="primary"):
-        bills = st.session_state.get("taipower_bills", {}).get(period_id)
-        readings = st.session_state.get("room_readings", {}).get(period_id)
-        raw = st.session_state.get("raw_readings", {}).get(period_id)
+        bills = st.session_state.get(SessionKeys.TAIPOWER_BILLS, {}).get(period_id)
+        readings = st.session_state.get(SessionKeys.ROOM_READINGS, {}).get(period_id)
+        raw = st.session_state.get(SessionKeys.RAW_READINGS, {}).get(period_id)
 
         if not bills:
             st.error("❌ 請先輸入並儲存台電帳單")
@@ -596,21 +601,21 @@ def render_calculation_tab(
                 if ok:
                     save_count += 1
 
-        st.session_state[f"calc_result_{period_id}"] = result
-        st.session_state[f"calc_details_{period_id}"] = enriched_details
+        st.session_state[SessionKeys.calc_result(period_id)] = result
+        st.session_state[SessionKeys.calc_details(period_id)] = enriched_details
         st.success(f"✅ 計算完成！已儲存 {save_count} 筆")
         st.rerun()
 
-    result = st.session_state.get(f"calc_result_{period_id}")
-    enriched_details = st.session_state.get(f"calc_details_{period_id}")
+    result = st.session_state.get(SessionKeys.calc_result(period_id))
+    enriched_details = st.session_state.get(SessionKeys.calc_details(period_id))
     if not (result and enriched_details):
         return
 
     # [v5.5.1] 舊版 session_state 相容：calc_result 版本不符時自動清除，提示重新計算
     if "shared_per_room_1f" not in result:
         st.warning("⚠️ 偵測到舊版計算快取，請點擊「🚀 開始計算」重新計算以套用最新邏輯。")
-        st.session_state.pop(f"calc_result_{period_id}", None)
-        st.session_state.pop(f"calc_details_{period_id}", None)
+        st.session_state.pop(SessionKeys.calc_result(period_id), None)
+        st.session_state.pop(SessionKeys.calc_details(period_id), None)
         return
 
     st.markdown("### 📊 計算摘要")
@@ -722,11 +727,11 @@ def render_calculation_tab(
 def render_records_tab(elec_service: ElectricityService):
     section_header("繳費記錄", "📜")
 
-    if "current_period_id" not in st.session_state:
+    if SessionKeys.CURRENT_PERIOD_ID not in st.session_state:
         info_card("請先選擇期間", "請前往「計費期間」Tab 選擇一個期間", "⚠️", "warning")
         return
 
-    period_id = st.session_state.current_period_id
+    period_id = st.session_state[SessionKeys.CURRENT_PERIOD_ID]
     st.info(f"📅 當前查詢期間 ID: {period_id}")
 
     with st.spinner("正在查詢..."):
@@ -1236,7 +1241,7 @@ def render_deposit_tab(elec_service: ElectricityService):
             label = f"{p['period_year']}/{p['period_month_start']:02d}-{p['period_month_end']:02d} (ID:{p['id']})"
             period_options[label] = p["id"]
 
-        default_period = st.session_state.get("current_period_id")
+        default_period = st.session_state.get(SessionKeys.CURRENT_PERIOD_ID)
         default_index = _get_selected_period_default_index(period_options, default_period)
 
         with st.form("deduct_deposit_form", clear_on_submit=True):
