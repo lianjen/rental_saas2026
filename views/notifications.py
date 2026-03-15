@@ -1,10 +1,12 @@
 """
-通知管理頁面 - v3.1
+通知管理頁面 - v3.2
 ✅ 支援租金 + 電費通知查看
 ✅ 類別篩選功能
 ✅ 統計卡片優化
 ✅ 使用 Service 架構
 ✅ [FIX v3.1] use_container_width → width (共 6 處)
+✅ [FIX v3.2] 修復 get_pending_notifications AttributeError
+✅ [FIX v3.2] 修復 meta_json 欄位 Arrow 序列化失敗（混合 dict/str 型別）
 """
 
 import streamlit as st
@@ -58,7 +60,7 @@ def render_settings_tab(notify_service: NotificationService):
             st.write("")
             if st.button(
                 "💾 儲存設定",
-                width="stretch",          # ✅ FIX 1
+                width="stretch",
                 key="save_line_settings",
             ):
                 try:
@@ -219,7 +221,7 @@ def render_manual_tab(
             st.divider()
             st.dataframe(
                 df,
-                width="stretch",          # ✅ FIX 2
+                width="stretch",
                 hide_index=True,
             )
 
@@ -236,7 +238,7 @@ def render_manual_tab(
         if st.button(
             "💰 觸發租金通知",
             type="primary",
-            width="stretch",              # ✅ FIX 3
+            width="stretch",
         ):
             st.info(
                 "💡 請到 Supabase Dashboard → Edge Functions → "
@@ -248,7 +250,7 @@ def render_manual_tab(
         if st.button(
             "⚡ 觸發電費通知",
             type="primary",
-            width="stretch",              # ✅ FIX 4
+            width="stretch",
         ):
             st.info(
                 "💡 請到 Supabase Dashboard → Edge Functions → "
@@ -286,7 +288,7 @@ def render_manual_tab(
 
             st.dataframe(
                 df,
-                width="stretch",          # ✅ FIX 5
+                width="stretch",
                 hide_index=True,
             )
 
@@ -410,6 +412,12 @@ def render_logs_tab(notify_service: NotificationService):
 
         display_df = df.copy()
 
+        # [FIX v3.2] meta_json 欄位可能混合 dict 和 str，統一轉成字串避免 Arrow 序列化失敗
+        if "meta_json" in display_df.columns:
+            display_df["meta_json"] = display_df["meta_json"].apply(
+                lambda x: str(x) if x is not None else ""
+            )
+
         if "created_at" in display_df.columns:
             display_df["created_at"] = pd.to_datetime(
                 display_df["created_at"]
@@ -454,7 +462,7 @@ def render_logs_tab(notify_service: NotificationService):
 
         st.dataframe(
             display_df,
-            width="stretch",              # ✅ FIX 6
+            width="stretch",
             hide_index=True,
         )
 

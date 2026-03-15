@@ -1,5 +1,5 @@
 """
-租金管理服務 - v5.2 (rent_due_day 支援)
+租金管理服務 - v5.3
 ✅ 自動注入 user_id
 ✅ RLS Policy 兼容
 ✅ 認證權限檢查
@@ -11,6 +11,7 @@
 ✅ 向後兼容
 ✅ [FIX] create_monthly_schedule: rent_amount → rent, 移除不存在的 payment_method 欄位
 ✅ [NEW] create_monthly_schedule: due_date 從 tenants.rent_due_day 讀取（預設 1 號，移除 hardcode 5）
+✅ [NEW v5.3] get_pending_notifications: 查詢待通知租金（供 views.notifications 使用）
 """
 
 import calendar
@@ -208,6 +209,65 @@ class PaymentService(BaseDBService):
         except Exception as e:
             log_db_operation("SELECT", "payment_schedule (overdue)", False, error=str(e))
             logger.error(f"查詢逾期租金失敗: {str(e)}")
+            return []
+
+    def get_pending_notifications(self) -> List[Dict]:
+        """
+        查詢待通知的租金項目（未繳 + 逾期），供 views.notifications 使用
+        notification_type 說明：
+          - overdue  : status='overdue' 或 due_date < 今天
+          - due      : 今天到期
+          - reminder : 未來到期（尚未逾期）
+        """
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+
+                conditions = ["status IN ('unpaid', 'overdue')"]
+                params: List = []
+
+                if not self.is_dev_mode():
+                    user_id = self._get_current_user_id()
+                    if user_id:
+                        conditions.append("user_id = %s")
+                        params.append(user_id)
+
+                where_clause = " AND ".join(conditions)
+
+                cursor.execute(
+                    f"""
+                    SELECT
+                        id,
+                        room_number,
+                        tenant_name,
+                        payment_year,
+                        payment_month,
+                        amount,
+                        due_date,
+                        status,
+                        CASE
+                            WHEN status = 'overdue' OR (due_date IS NOT NULL AND due_date < CURRENT_DATE)
+                                THEN 'overdue'
+                            WHEN due_date = CURRENT_DATE
+                                THEN 'due'
+                            ELSE 'reminder'
+                        END AS notification_type
+                    FROM payment_schedule
+                    WHERE {where_clause}
+                    ORDER BY due_date NULLS LAST, room_number
+                    """,
+                    params,
+                )
+
+                columns = [d[0] for d in cursor.description]
+                rows = cursor.fetchall()
+                log_db_operation("SELECT", "payment_schedule (pending_notifications)", True, len(rows))
+                logger.info(f"✅ 查詢待通知租金: {len(rows)} 筆")
+                return [dict(zip(columns, row)) for row in rows]
+
+        except Exception as e:
+            log_db_operation("SELECT", "payment_schedule (pending_notifications)", False, error=str(e))
+            logger.error(f"查詢待通知項目失敗: {e}")
             return []
 
     # ==================== 高階查詢與摘要（給 views.rent 用）====================
@@ -561,7 +621,6 @@ class PaymentService(BaseDBService):
                     tenant_conditions.append("user_id = %s")
                     tenant_params.append(user_id)
 
-                # ✅ [NEW] 加入 rent_due_day，COALESCE 確保舊資料不為 NULL
                 cursor.execute(
                     f"""
                     SELECT name, rent, COALESCE(rent_due_day, 1) AS rent_due_day
@@ -576,10 +635,8 @@ class PaymentService(BaseDBService):
                     logger.warning(f"房間 {room_number} 無有效房客，略過")
                     return False, f"房間 {room_number} 無有效房客"
 
-                # ✅ [NEW] 解包 3 個欄位
                 tenant_name, rent_amount, rent_due_day = tenant
 
-                # 檢查該年月是否已存在
                 check_conditions = [
                     "room_number = %s", "payment_year = %s", "payment_month = %s"
                 ]
@@ -600,16 +657,14 @@ class PaymentService(BaseDBService):
                     logger.info(f"{room_number} {year}/{month} 已存在，略過")
                     return True, f"{room_number} {year}/{month} 已存在"
 
-                # ✅ [NEW] 從 rent_due_day 計算到期日，避免月底天數不足
                 try:
                     due_day = int(rent_due_day)
                     last_day = calendar.monthrange(year, month)[1]
-                    due_day = min(due_day, last_day)   # 防止 2 月 29/30/31 出錯
+                    due_day = min(due_day, last_day)
                     due = date(year, month, due_day)
                 except Exception:
                     due = None
 
-                # 插入記錄
                 cursor.execute(
                     """
                     INSERT INTO payment_schedule
@@ -1155,7 +1210,7 @@ if __name__ == "__main__":
 
     service = PaymentService()
 
-    print("=== 測試租金服務 v5.2 (rent_due_day) ===\n")
+    print("=== 測試租金服務 v5.3 ===\n")
 
     print("0. 認證狀態:")
     print(f"   已登入: {service.is_authenticated()}")
@@ -1171,12 +1226,16 @@ if __name__ == "__main__":
     overdue = service.get_overdue_payments()
     print(f"   {len(overdue)} 筆逾期\n")
 
-    print("3. 本月摘要 (2026/3):")
+    print("3. 待通知項目:")
+    pending = service.get_pending_notifications()
+    print(f"   {len(pending)} 筆待通知\n")
+
+    print("4. 本月摘要 (2026/3):")
     summary = service.get_monthly_summary(2026, 3)
     for key, value in summary.items():
         print(f"   {key}: {value}")
 
-    print("\n4. 租金統計:")
+    print("\n5. 租金統計:")
     stats = service.get_payment_statistics()
     for key, value in stats.items():
         print(f"   {key}: {value}")
