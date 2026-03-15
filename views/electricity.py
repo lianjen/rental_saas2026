@@ -1,6 +1,7 @@
 """
-電費管理 - v5.5.3
-✅ v5.5.2 所有功能保留
+電費管理 - v5.6.0
+✅ v5.5.3 所有功能保留
+✅ [NEW v5.6.0] 抽出 ElectricityCalculator 純函數，供 pytest 單元測試
 ✅ [FIX v5.5.3] fallback data_table: use_container_width=True → width="stretch"
     - 消除 Streamlit DeprecationWarning (will be removed after 2025-12-31)
 """
@@ -19,6 +20,7 @@ except ImportError:
     HAS_PLOTLY = False
 
 from services.electricity_service import ElectricityService
+from services.electricity_calculator import ElectricityCalculator
 from services.notification_service import NotificationService
 
 try:
@@ -178,134 +180,34 @@ def calculate_electricity_charges(
     room_readings: Dict[str, float],
 ) -> Optional[Dict]:
     try:
-        floor_1f = next((b for b in taipower_bills if b["floor_label"] == "1F"), None)
-        floors_2f_4f = [b for b in taipower_bills if b["floor_label"] != "1F"]
-
-        # ── 2F~4F 合併計算 ────────────────────────────────────────
-        if floors_2f_4f:
-            merged_amount = sum(b["amount"] for b in floors_2f_4f)
-            merged_kwh = sum(b["kwh"] for b in floors_2f_4f)
-            # [FIX v5.5.2] 單價保留完整精度，最後乘積才 round
-            merged_unit_price_exact = merged_amount / merged_kwh if merged_kwh > 0 else 0
-            merged_unit_price = round(merged_unit_price_exact, 2)  # 僅供顯示
-        else:
-            merged_amount = merged_kwh = merged_unit_price = merged_unit_price_exact = 0
-
-        sharing_rooms_usage = sum(room_readings.get(r, 0) for r in ROOMS.SHARING_ROOMS)
-        public_kwh = max(0, merged_kwh - sharing_rooms_usage)
-        sharing_rooms_with_reading = [r for r in ROOMS.SHARING_ROOMS if room_readings.get(r, 0) > 0]
-        sharing_count = len(sharing_rooms_with_reading)
-
-        # [FIX v5.5.2] 不提前 round，保留浮點（如 111.2）
-        shared_per_room = public_kwh / sharing_count if sharing_count > 0 else 0
-
-        results = []
-
-        # ── [FIX v5.5.2] 1F：公用電平均分攤給 1A / 1B ──────────────
-        public_kwh_1f = 0
-        shared_per_room_1f = 0
-        if floor_1f and floor_1f["kwh"] > 0:
-            unit_1f_exact = floor_1f["amount"] / floor_1f["kwh"]
-            unit_1f = round(unit_1f_exact, 2)  # 僅供顯示
-            exclusive_rooms_with_reading = [
-                r for r in ROOMS.EXCLUSIVE_ROOMS if room_readings.get(r, 0) > 0
-            ]
-            exclusive_usage_sum = sum(room_readings.get(r, 0) for r in ROOMS.EXCLUSIVE_ROOMS)
-            public_kwh_1f = max(0, floor_1f["kwh"] - exclusive_usage_sum)
-
-            exclusive_count = len(exclusive_rooms_with_reading)
-            # [FIX v5.5.2] 不提前 round
-            shared_per_room_1f = public_kwh_1f / exclusive_count if exclusive_count > 0 else 0
-
-            for room in ROOMS.EXCLUSIVE_ROOMS:
-                kwh = room_readings.get(room, 0)
-                if kwh <= 0:
-                    continue
-                total_kwh_1f = kwh + shared_per_room_1f
-                results.append({
-                    "樓層": "1F",
-                    "房號": room,
-                    "類型": "獨立房間",
-                    "使用度數": round(kwh, 2),
-                    "公用分攤": round(shared_per_room_1f, 1),
-                    "總度數": round(total_kwh_1f, 2),
-                    "單價": unit_1f,
-                    # [FIX v5.5.2] 用精確單價計算，最後才 round
-                    "應繳金額": round(total_kwh_1f * unit_1f_exact),
-                })
-
-        # ── 2F~4F 各房間 ──────────────────────────────────────────
         floor_map = {r: "2F" for r in ["2A", "2B"]}
         floor_map.update({r: "3F" for r in ["3A", "3B", "3C", "3D"]})
         floor_map.update({r: "4F" for r in ["4A", "4B", "4C", "4D"]})
 
-        for room in ROOMS.SHARING_ROOMS:
-            kwh = room_readings.get(room, 0)
-            if kwh <= 0:
-                continue
-            total_room_kwh = kwh + shared_per_room
-            results.append({
-                "樓層": floor_map.get(room),
-                "房號": room,
-                "類型": "分攤房間",
-                "使用度數": round(kwh, 2),
-                "公用分攤": round(shared_per_room, 1),
-                "總度數": round(total_room_kwh, 2),
-                "單價": merged_unit_price,
-                # [FIX v5.5.2] 用精確單價計算，最後才 round
-                "應繳金額": round(total_room_kwh * merged_unit_price_exact),
-            })
+        result = ElectricityCalculator.calculate_all(
+            taipower_bills=taipower_bills,
+            room_readings=room_readings,
+            exclusive_rooms=getattr(ROOMS, "EXCLUSIVE_ROOMS", _1F_ROOMS),
+            sharing_rooms=getattr(ROOMS, "SHARING_ROOMS", []),
+            floor_room_mapping=floor_map,
+        )
 
-        total_charge = sum(r["應繳金額"] for r in results)
-        total_taipower = sum(b["amount"] for b in taipower_bills)
+        result["details"] = [
+            {
+                "樓層": detail["floor"],
+                "房號": detail["room_number"],
+                "類型": "獨立房間" if detail["room_type"] == "exclusive" else "分攤房間",
+                "使用度數": detail["used_kwh"],
+                "公用分攤": round(detail["shared_kwh"], 1),
+                "總度數": detail["total_kwh"],
+                "單價": detail["unit_price"],
+                "應繳金額": detail["amount_due"],
+            }
+            for detail in result["details"]
+        ]
 
-        # ── floor_summaries ───────────────────────────────────────
-        floor_summaries = []
-        if floor_1f:
-            f1_results = [r for r in results if r["房號"] in ["1A", "1B"]]
-            if f1_results:
-                unit_1f_val = round(floor_1f["amount"] / floor_1f["kwh"], 2) if floor_1f["kwh"] > 0 else 0
-                floor_summaries.append({
-                    "floor": "1F",
-                    "bill_amount": floor_1f["amount"],
-                    "bill_kwh": floor_1f["kwh"],
-                    "room_kwh": sum(r["使用度數"] for r in f1_results),
-                    "public_kwh": round(public_kwh_1f, 2),
-                    "unit_price": unit_1f_val,
-                    "total_charge": sum(r["應繳金額"] for r in f1_results),
-                })
-
-        for bill in floors_2f_4f:
-            fl = bill["floor_label"]
-            fl_r = [r for r in results if r["房號"] in FLOOR_CONFIG[fl]["rooms"]]
-            if fl_r:
-                fl_room_kwh = sum(r["使用度數"] for r in fl_r)
-                fl_public_kwh = max(0, bill["kwh"] - fl_room_kwh)
-                floor_summaries.append({
-                    "floor": fl,
-                    "bill_amount": bill["amount"],
-                    "bill_kwh": bill["kwh"],
-                    "room_kwh": fl_room_kwh,
-                    "public_kwh": round(fl_public_kwh, 2),
-                    "unit_price": merged_unit_price,
-                    "total_charge": sum(r["應繳金額"] for r in fl_r),
-                })
-
-        logger.info("✅ 電費計算完成: %s 間房間", len(results))
-        return {
-            "total_charge": total_charge,
-            "taipower_amount": total_taipower,
-            "difference": total_charge - total_taipower,
-            "details": results,
-            "floor_summaries": floor_summaries,
-            "merged_unit_price": merged_unit_price,
-            "total_public_kwh": public_kwh,
-            "shared_per_room": round(shared_per_room, 1),
-            "merged_kwh": merged_kwh,
-            "merged_amount": merged_amount,
-            "public_kwh_1f": public_kwh_1f,
-            "shared_per_room_1f": round(shared_per_room_1f, 1),
-        }
+        logger.info("✅ 電費計算完成: %s 間房間", len(result["details"]))
+        return result
 
     except Exception as e:
         logger.exception("❌ 電費計算失敗")
