@@ -1,26 +1,31 @@
 """
-electricity repository bridge tests - v1.0.0
-驗證 electricity_service.py 已改為透過 repository 協作，而非直接操作 DB。
+electricity repository bridge tests - v1.1.0
+驗證 electricity_billing_service.py 已改為透過 repository 協作，
+並與 electricity_service facade 相容。
 """
 
 import unittest
 from unittest.mock import Mock, patch
 
 from repository import ElectricityRepository
+from services.electricity_billing_service import ElectricityBillingService
 from services.electricity_service import ElectricityService
 
 
 class ElectricityRepositoryBridgeTest(unittest.TestCase):
-    """驗證電費 service 與 repository 之間的委派關係。"""
+    """驗證電費 billing service 與 repository 的委派關係。"""
 
     @staticmethod
-    def _make_service() -> ElectricityService:
-        service = object.__new__(ElectricityService)
+    def _make_service() -> ElectricityBillingService:
+        service = object.__new__(ElectricityBillingService)
         service.repository = Mock()
         return service
 
     def test_repository_package_exports_electricity_repository(self):
         self.assertTrue(issubclass(ElectricityRepository, object))
+
+    def test_facade_still_inherits_billing_service(self):
+        self.assertTrue(issubclass(ElectricityService, ElectricityBillingService))
 
     def test_save_taipower_bills_delegates_to_repository(self):
         service = self._make_service()
@@ -30,7 +35,7 @@ class ElectricityRepositoryBridgeTest(unittest.TestCase):
             {"floor_label": "234F", "amount": 2000, "kwh": 200},
         ]
 
-        with patch("services.electricity_service.clear_electricity_cache") as clear_cache:
+        with patch("services.electricity_billing_service.clear_electricity_cache") as clear_cache:
             ok, msg = service.save_taipower_bills(7, bills)
 
         self.assertTrue(ok)
@@ -43,7 +48,7 @@ class ElectricityRepositoryBridgeTest(unittest.TestCase):
         service.repository.period_exists.return_value = (True, False)
         service.repository.create_period.return_value = (True, 99)
 
-        with patch("services.electricity_service.clear_electricity_cache") as clear_cache:
+        with patch("services.electricity_billing_service.clear_electricity_cache") as clear_cache:
             ok, msg, period_id = service.add_period(2026, 1, 2, "2026-02-01")
 
         self.assertTrue(ok)
@@ -57,7 +62,7 @@ class ElectricityRepositoryBridgeTest(unittest.TestCase):
         service = self._make_service()
         service.repository.upsert_reading.return_value = (True, 1)
 
-        with patch("services.electricity_service.clear_electricity_cache") as clear_cache:
+        with patch("services.electricity_billing_service.clear_electricity_cache") as clear_cache:
             ok, msg = service.save_reading(
                 period_id=5,
                 room="2A",
