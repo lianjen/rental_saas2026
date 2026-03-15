@@ -1,6 +1,7 @@
 """
 幸福之家 Pro - 租賃管理系統
-Nordic Edition v15.2 (Service Architecture + Auth Gatekeeper + Cookie Persistence)
+Nordic Edition v15.3 (Service Architecture + Auth Gatekeeper + Cookie Persistence)
+✅ [FIX v15.3] 失效 refresh_token 不再於 rerun 中重複重試
 ✅ [FIX v15.2] render_menu() 加入 on_change callback → 修正「點一次沒反應」導航 bug
 ✅ v15.1 所有功能保留
 """
@@ -63,7 +64,7 @@ key = "eyJhbGciOi..."
 
 APP_CONFIG = {
     "title":       get_env("APP_TITLE", "幸福之家 Pro"),
-    "version":     get_env("APP_VERSION", "v15.2"),
+    "version":     get_env("APP_VERSION", "v15.3"),
     "environment": get_env("ENVIRONMENT", "production"),
     "log_level":   get_env("LOG_LEVEL", "INFO"),
     "dev_mode":    get_env("DEV_MODE", "false").lower() == "true",
@@ -115,6 +116,7 @@ load_css(os.path.join("assets", "style.css"))
 # ============================================
 try:
     from utils.session_manager import session_manager
+    from utils.auth_refresh_guard import AuthRefreshGuard
     from services.auth_service import AuthService
     logger.info("✅ Session Manager 和 Auth Service 載入成功")
 except ImportError as e:
@@ -153,12 +155,20 @@ def _try_restore_from_cookie() -> bool:
             logger.debug("🍪 Cookie 沒有 refresh_token，需要登入")
             return False
 
+        refresh_token = cookie["refresh_token"]
+        if AuthRefreshGuard.is_blocked(refresh_token):
+            logger.warning("⚠️ Cookie 內的 refresh_token 已判定失效，略過重試並清除 Cookie")
+            from utils.cookie_manager import clear_auth_cookie
+            clear_auth_cookie()
+            return False
+
         logger.info("🍪 Cookie 發現 refresh_token，嘗試還原 Session...")
         auth_service = AuthService()
-        new_session  = auth_service.refresh_session(cookie["refresh_token"])
+        new_session  = auth_service.refresh_session(refresh_token)
 
         if not new_session:
             logger.warning("⚠️ refresh_token 已失效，清除 Cookie")
+            AuthRefreshGuard.mark_failed(refresh_token, "cookie_restore")
             from utils.cookie_manager import clear_auth_cookie
             clear_auth_cookie()
             return False
@@ -171,6 +181,7 @@ def _try_restore_from_cookie() -> bool:
         )
         from utils.cookie_manager import save_auth_cookie
         save_auth_cookie(new_session["access_token"], new_session["refresh_token"])
+        AuthRefreshGuard.clear()
 
         logger.info(f"✅ Session 從 Cookie 還原成功: {session_manager.get_user_email()}")
         return True
@@ -191,6 +202,7 @@ def _sync_cookie() -> None:
         if not cookie or cookie.get("refresh_token") != rt:
             save_auth_cookie(at, rt)
             logger.debug("🔄 Cookie 已同步")
+        AuthRefreshGuard.clear()
     except Exception as e:
         logger.debug(f"Cookie 同步失敗: {e}")
 
@@ -216,6 +228,9 @@ def handle_session_refresh() -> bool:
         refresh_token = st.session_state.get("refresh_token")
         if not refresh_token:
             return False
+        if AuthRefreshGuard.is_blocked(refresh_token):
+            logger.warning("⚠️ 略過已失效 refresh_token 的自動刷新")
+            return False
 
         new_session = auth_service.refresh_session(refresh_token)
         if new_session:
@@ -223,8 +238,13 @@ def handle_session_refresh() -> bool:
             st.session_state["refresh_token"] = new_session["refresh_token"]
             st.session_state["expires_at"]    = new_session.get("expires_at")
             st.session_state["last_activity"] = datetime.now()
+            from utils.cookie_manager import save_auth_cookie
+            save_auth_cookie(new_session["access_token"], new_session["refresh_token"])
+            AuthRefreshGuard.clear()
             logger.info("✅ Session 已自動刷新")
             return True
+        AuthRefreshGuard.mark_failed(refresh_token, "session_refresh")
+        _clear_cookie()
         return False
 
     except Exception as e:
@@ -424,6 +444,7 @@ def handle_logout() -> None:
         logger.info(f"✅ 用戶 {session_manager.get_user_email()} 已登出")
     except Exception as e:
         logger.error(f"Supabase 登出失敗: {e}")
+    AuthRefreshGuard.clear()
     _clear_cookie()
     session_manager.logout()
     st.success("✅ 已登出")
