@@ -1,5 +1,5 @@
 """
-租客管理服務 - v5.5 (rent_due_day 支援)
+租客管理服務 - v5.6 (rent_due_day 支援)
 ⚡ FORCE RELOAD: 2026-03-06
 ✅ 整合 Pydantic 驗證層
 ✅ 自動注入 user_id
@@ -25,6 +25,7 @@ from typing import Tuple, Optional, Dict, List, Union
 from pydantic import ValidationError
 
 from services.base_db import BaseDBService
+from services.cache_utils import cache_data, clear_cached_functions, get_cache_scope
 from services.logger import logger, log_db_operation
 
 from schemas.tenant import (
@@ -108,6 +109,37 @@ def _recalculate_rent(
     )
 
 
+@cache_data(ttl=300)
+def _cached_get_tenants(
+    active_only: bool,
+    user_id: str,
+    dev_mode: bool,
+) -> pd.DataFrame:
+    return TenantService()._get_tenants_uncached(active_only=active_only)
+
+
+@cache_data(ttl=300)
+def _cached_get_tenant_by_room(
+    room_number: str,
+    user_id: str,
+    dev_mode: bool,
+) -> Optional[Dict]:
+    return TenantService()._get_tenant_by_room_uncached(room_number=room_number)
+
+
+def clear_tenant_cache() -> None:
+    clear_cached_functions(
+        _cached_get_tenants,
+        _cached_get_tenant_by_room,
+    )
+    try:
+        from services.electricity_service import clear_electricity_cache
+
+        clear_electricity_cache()
+    except Exception:
+        pass
+
+
 class TenantService(BaseDBService):
     """租客管理服務 (繼承 BaseDBService，整合認證)"""
 
@@ -118,7 +150,7 @@ class TenantService(BaseDBService):
 
     # ==================== 查詢操作 ====================
 
-    def get_tenants(self, active_only: bool = True) -> pd.DataFrame:
+    def _get_tenants_uncached(self, active_only: bool = True) -> pd.DataFrame:
         """獲取租客列表（自動過濾當前用戶）"""
 
         def query():
@@ -162,6 +194,10 @@ class TenantService(BaseDBService):
                 return pd.DataFrame(data, columns=columns)
 
         return self.retry_on_failure(query)
+
+    def get_tenants(self, active_only: bool = True) -> pd.DataFrame:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_tenants(active_only, user_id, dev_mode)
 
     def get_all_tenants(self, include_inactive: bool = True) -> List[Dict]:
         """取得所有房客"""
@@ -227,7 +263,7 @@ class TenantService(BaseDBService):
             logger.error(f"❌ 查詢失敗: {str(e)}", exc_info=True)
             return None
 
-    def get_tenant_by_room(self, room_number: str) -> Optional[Dict]:
+    def _get_tenant_by_room_uncached(self, room_number: str) -> Optional[Dict]:
         """根據房號查詢租客"""
         try:
             with self.get_connection() as conn:
@@ -262,6 +298,10 @@ class TenantService(BaseDBService):
             return None
 
     # ==================== 新增操作 ====================
+
+    def get_tenant_by_room(self, room_number: str) -> Optional[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_tenant_by_room(room_number, user_id, dev_mode)
 
     def add_tenant(
         self,
@@ -381,6 +421,7 @@ class TenantService(BaseDBService):
                 tenant_id = cursor.fetchone()[0]
                 conn.commit()
 
+            clear_tenant_cache()
             log_db_operation("INSERT", "tenants", True, 1)
             logger.info(
                 f"✅ 新增租客: {validated_data['name']} "
@@ -551,6 +592,7 @@ class TenantService(BaseDBService):
 
                 conn.commit()
 
+            clear_tenant_cache()
             log_db_operation("UPDATE", "tenants", True, 1)
             logger.info(f"✅ 更新租客 ID: {tenant_id}")
 
@@ -626,6 +668,7 @@ class TenantService(BaseDBService):
                 )
                 conn.commit()
 
+            clear_tenant_cache()
             log_db_operation("UPDATE", "tenants (soft delete)", True, 1)
             logger.info(f"✅ 刪除租客: {tenant_name} (ID: {tenant_id})")
 
