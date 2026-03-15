@@ -1,6 +1,7 @@
 """
-支出管理服務 - v4.2
+支出管理服務 - v4.3
 ✅ [FIX v4.2] add_expense 補入 user_id 參數與 INSERT 欄位
+✅ [NEW v4.3] 高頻唯讀查詢加上 cache_data，寫入後自動清 cache
 ✅ 其餘功能與 v4.1 完全相同
 """
 
@@ -8,7 +9,38 @@ import pandas as pd
 from datetime import date
 from typing import Tuple, Dict, List, Optional
 from services.base_db import BaseDBService
+from services.cache_utils import cache_data, clear_cached_functions, get_cache_scope
 from services.logger import logger, log_db_operation
+
+
+@cache_data(ttl=300)
+def _cached_get_expenses(
+    year: Optional[int],
+    month: Optional[int],
+    categories: Optional[tuple[str, ...]],
+    limit: int,
+    user_id: str,
+    dev_mode: bool,
+) -> List[Dict]:
+    category_list = list(categories) if categories else None
+    return ExpenseService()._get_expenses_uncached(year, month, category_list, limit)
+
+
+@cache_data(ttl=300)
+def _cached_get_expense_statistics(
+    year: Optional[int],
+    month: Optional[int],
+    user_id: str,
+    dev_mode: bool,
+) -> Dict:
+    return ExpenseService()._get_expense_statistics_uncached(year, month)
+
+
+def clear_expense_cache() -> None:
+    clear_cached_functions(
+        _cached_get_expenses,
+        _cached_get_expense_statistics,
+    )
 
 try:
     from config.constants import EXPENSE
@@ -69,6 +101,7 @@ class ExpenseService(BaseDBService):
                     (user_id, expense_date, category, amount, description),  # ✅ FIX v4.2
                 )
 
+                clear_expense_cache()
                 log_db_operation("INSERT", "expenses", True, 1)
                 logger.info(f"✅ 新增支出: {category} NT${amount:,.0f} (user={user_id})")
                 return True, "新增成功"
@@ -80,7 +113,7 @@ class ExpenseService(BaseDBService):
 
     # ==================== 查詢列表 ====================
 
-    def get_expenses(
+    def _get_expenses_uncached(
         self,
         year: Optional[int] = None,
         month: Optional[int] = None,
@@ -128,7 +161,7 @@ class ExpenseService(BaseDBService):
 
     # ==================== 統計 ====================
 
-    def get_expense_statistics(
+    def _get_expense_statistics_uncached(
         self, year: Optional[int] = None, month: Optional[int] = None
     ) -> Dict:
         try:
@@ -177,6 +210,23 @@ class ExpenseService(BaseDBService):
 
     # ==================== 更新 ====================
 
+    def get_expenses(
+        self,
+        year: Optional[int] = None,
+        month: Optional[int] = None,
+        categories: Optional[List[str]] = None,
+        limit: int = 50,
+    ) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        categories_key = tuple(categories) if categories else None
+        return _cached_get_expenses(year, month, categories_key, limit, user_id, dev_mode)
+
+    def get_expense_statistics(
+        self, year: Optional[int] = None, month: Optional[int] = None
+    ) -> Dict:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_expense_statistics(year, month, user_id, dev_mode)
+
     def update_expense(
         self,
         expense_id: int,
@@ -200,6 +250,7 @@ class ExpenseService(BaseDBService):
                     (expense_date, category, amount, description, expense_id),
                 )
 
+                clear_expense_cache()
                 log_db_operation("UPDATE", "expenses", True, 1)
                 logger.info(f"✅ 更新支出 ID: {expense_id}")
                 return True, "更新成功"
@@ -217,6 +268,7 @@ class ExpenseService(BaseDBService):
                 cursor = conn.cursor()
                 cursor.execute("DELETE FROM expenses WHERE id = %s", (expense_id,))
 
+                clear_expense_cache()
                 log_db_operation("DELETE", "expenses", True, 1)
                 logger.info(f"✅ 刪除支出 ID: {expense_id}")
                 return True, "刪除成功"
