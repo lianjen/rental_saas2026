@@ -1,7 +1,7 @@
 """
-電費管理服務 - v5.6
+電費管理服務 - v5.7
 ✅ 保留 ElectricityService 作為 facade
-✅ DB 讀寫邏輯移至 electricity_billing_service.py
+✅ repository-backed DB 邏輯移至 electricity_billing_service.py
 ✅ 純計算邏輯維持在 electricity_calculator.py
 ✅ 向後兼容既有 import 路徑與 clear_electricity_cache
 """
