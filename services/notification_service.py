@@ -1,5 +1,5 @@
 """
-統一通知服務 - v4.7 (transaction isolation 修正版)
+統一通知服務 - v4.8 (LINE webhook signature validation)
 ✅ v4.6 所有功能保留
 ✅ [FIX v4.7] send_electricity_bill_notification 拆成三層獨立 connection:
    1. UPDATE electricity_periods (獨立 conn，失敗只 warning 不中斷)
@@ -17,6 +17,11 @@ from datetime import datetime
 
 from services.base_db import BaseDBService
 from services.logger import logger, log_db_operation
+from middleware.line_webhook_validator import (
+    HTTP_OK,
+    parse_line_webhook_events,
+    require_valid_line_signature,
+)
 
 
 class NotificationService(BaseDBService):
@@ -25,6 +30,29 @@ class NotificationService(BaseDBService):
     def __init__(self):
         super().__init__()
         self.line_token = self._load_line_token()
+
+    @require_valid_line_signature
+    def handle_line_webhook(
+        self,
+        body: bytes,
+        signature: str,
+        channel_secret: Optional[str] = None,
+    ) -> Tuple[bool, str, List[Dict], int]:
+        """
+        Secure entry point for LINE webhook requests.
+
+        Signature validation happens before any business logic runs.
+        """
+        ok, msg, events, status_code = parse_line_webhook_events(
+            body=body,
+            signature=signature,
+            channel_secret=channel_secret,
+        )
+        if not ok:
+            return False, msg, [], status_code
+
+        logger.info("[LINE] Webhook accepted - events=%s", len(events))
+        return True, "LINE webhook verified", events, HTTP_OK
 
     # ──────────────────────────────────────────
     # Token 載入（三層 fallback）
