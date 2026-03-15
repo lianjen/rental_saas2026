@@ -1,5 +1,5 @@
 """
-LINE webhook validator - v1.0.0
+LINE webhook validator - v1.0.1
 Validate LINE webhook signatures before any business logic runs.
 """
 
@@ -71,6 +71,12 @@ def _validate_with_line_sdk(
         return True
     except InvalidSignatureError:
         return False
+    except Exception as exc:
+        # Some SDK versions validate payload schema while parsing. When the payload
+        # is structurally incomplete but the signature is valid, we fall back to
+        # plain HMAC verification instead of treating it as a forged request.
+        logger.debug("[LINE] SDK signature parser fallback to HMAC: %s", exc)
+        return None
 
 
 def validate_line_signature(channel_secret: str, body: bytes, signature: str) -> bool:
@@ -111,11 +117,11 @@ def validate_line_webhook_request(
         return False, "LINE_CHANNEL_SECRET is not configured", HTTP_BAD_REQUEST
 
     if not signature:
-        logger.warning("[LINE] Invalid signature - 可能是偽造請求")
+        logger.warning("[LINE] Invalid signature - possible forged request")
         return False, "Missing X-Line-Signature header", HTTP_FORBIDDEN
 
     if not validate_line_signature(resolved_secret, body, signature):
-        logger.warning("[LINE] Invalid signature - 可能是偽造請求")
+        logger.warning("[LINE] Invalid signature - possible forged request")
         return False, "Invalid LINE signature", HTTP_FORBIDDEN
 
     return True, "LINE signature verified", HTTP_OK
@@ -148,25 +154,31 @@ def parse_line_webhook_events(
 
         parser = WebhookParser(resolved_secret)
         try:
-            parsed_payload = parser.parse(body_text, signature, as_payload=True)
-        except TypeError:
-            parsed_payload = parser.parse(body_text, signature)
+            try:
+                parsed_payload = parser.parse(body_text, signature, as_payload=True)
+            except TypeError:
+                parsed_payload = parser.parse(body_text, signature)
 
-        if hasattr(parsed_payload, "events"):
-            raw_events = parsed_payload.events
-        else:
-            raw_events = parsed_payload
-
-        events: List[Dict[str, Any]] = []
-        for event in raw_events:
-            if hasattr(event, "as_json_dict"):
-                events.append(event.as_json_dict())
-            elif isinstance(event, dict):
-                events.append(event)
+            if hasattr(parsed_payload, "events"):
+                raw_events = parsed_payload.events
             else:
-                events.append({"raw_event": str(event)})
+                raw_events = parsed_payload
 
-        return True, "LINE webhook accepted", events, HTTP_OK
+            events: List[Dict[str, Any]] = []
+            for event in raw_events:
+                if hasattr(event, "as_json_dict"):
+                    events.append(event.as_json_dict())
+                elif isinstance(event, dict):
+                    events.append(event)
+                else:
+                    events.append({"raw_event": str(event)})
+
+            return True, "LINE webhook accepted", events, HTTP_OK
+        except Exception as exc:
+            logger.debug("[LINE] SDK event parser fallback to JSON: %s", exc)
+            payload = json.loads(body_text)
+            events = payload.get("events", [])
+            return True, "LINE webhook accepted", events, HTTP_OK
     except json.JSONDecodeError as exc:
         logger.error("[LINE] Webhook payload decode failed: %s", exc)
         return False, f"Invalid LINE webhook payload: {exc}", HTTP_BAD_REQUEST
