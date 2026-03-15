@@ -1,7 +1,8 @@
 """
-電費管理服務 - v5.4
+電費管理服務 - v5.5
 ✅ v5.0 所有功能保留
 ✅ [NEW v5.4] electricity_taipower_bills 台電帳單持久化
+✅ [NEW v5.5] 高頻唯讀查詢加上 cache_data，寫入後自動清 cache
     - _init_taipower_bills_table: 自動建表
     - save_taipower_bills:   UPSERT 一整期的 4 筆帳單
     - get_taipower_bills:    讀取指定 period_id 的帳單 → List[Dict]
@@ -13,7 +14,68 @@ from typing import Optional, Tuple, List, Dict
 from datetime import datetime, date
 
 from services.base_db import BaseDBService
+from services.cache_utils import cache_data, clear_cached_functions, get_cache_scope
 from services.logger import logger, log_db_operation
+
+
+@cache_data(ttl=300)
+def _cached_get_taipower_bills(
+    period_id: int,
+    user_id: str,
+    dev_mode: bool,
+) -> List[Dict]:
+    return ElectricityService()._get_taipower_bills_uncached(period_id)
+
+
+@cache_data(ttl=300)
+def _cached_get_deposit_ledger(
+    room_number: str,
+    user_id: str,
+    dev_mode: bool,
+) -> pd.DataFrame:
+    return ElectricityService()._get_deposit_ledger_uncached(room_number)
+
+
+@cache_data(ttl=300)
+def _cached_get_all_rooms_deposit_summary(
+    user_id: str,
+    dev_mode: bool,
+) -> pd.DataFrame:
+    return ElectricityService()._get_all_rooms_deposit_summary_uncached()
+
+
+@cache_data(ttl=600)
+def _cached_get_all_periods(user_id: str, dev_mode: bool) -> List[Dict]:
+    return ElectricityService()._get_all_periods_uncached()
+
+
+@cache_data(ttl=300)
+def _cached_get_all_readings(
+    period_id: int,
+    user_id: str,
+    dev_mode: bool,
+) -> List[Dict]:
+    return ElectricityService()._get_all_readings_uncached(period_id)
+
+
+@cache_data(ttl=300)
+def _cached_get_payment_record(
+    period_id: int,
+    user_id: str,
+    dev_mode: bool,
+) -> Optional[pd.DataFrame]:
+    return ElectricityService()._get_payment_record_uncached(period_id)
+
+
+def clear_electricity_cache() -> None:
+    clear_cached_functions(
+        _cached_get_taipower_bills,
+        _cached_get_deposit_ledger,
+        _cached_get_all_rooms_deposit_summary,
+        _cached_get_all_periods,
+        _cached_get_all_readings,
+        _cached_get_payment_record,
+    )
 
 
 class ElectricityService(BaseDBService):
@@ -114,6 +176,7 @@ class ElectricityService(BaseDBService):
                         (period_id, b["floor_label"], int(b["amount"]), float(b["kwh"])),
                     )
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("UPSERT", "electricity_taipower_bills", True, len(bills))
                 logger.info(f"✅ 台電帳單已儲存: period={period_id}, {len(bills)} 筆")
                 return True, f"✅ 已儲存 {len(bills)} 個台電單"
@@ -122,7 +185,7 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 儲存台電帳單失敗: {str(e)}")
             return False, f"❌ {str(e)[:100]}"
 
-    def get_taipower_bills(self, period_id: int) -> List[Dict]:
+    def _get_taipower_bills_uncached(self, period_id: int) -> List[Dict]:
         """
         讀取指定期間的台電帳單
         返回: [{"floor_label": "1F", "amount": 1200, "kwh": 85.0}, ...]
@@ -152,6 +215,10 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 讀取台電帳單失敗: {str(e)}")
             return []
 
+    def get_taipower_bills(self, period_id: int) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_taipower_bills(period_id, user_id, dev_mode)
+
     def delete_taipower_bills(self, period_id: int) -> Tuple[bool, str]:
         """刪除整期台電帳單（重新輸入時使用）"""
         try:
@@ -163,6 +230,7 @@ class ElectricityService(BaseDBService):
                 )
                 deleted = cursor.rowcount
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("DELETE", "electricity_taipower_bills", True, deleted)
                 logger.info(f"✅ 刪除台電帳單: period={period_id}, {deleted} 筆")
                 return True, f"✅ 已刪除 {deleted} 筆"
@@ -198,6 +266,7 @@ class ElectricityService(BaseDBService):
                 )
                 entry_id = cursor.fetchone()[0]
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("INSERT", "electricity_deposit_ledger", True, 1)
                 logger.info(f"✅ 預收電費: {room_number} +${amount:,.0f} ({date_str})")
                 return True, f"✅ 已新增預收 ${amount:,.0f} 元", entry_id
@@ -241,6 +310,7 @@ class ElectricityService(BaseDBService):
                 )
                 entry_id = cursor.fetchone()[0]
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("INSERT", "electricity_deposit_ledger", True, 1)
                 logger.info(
                     f"✅ 扣電費: {room_number} -${amount:,.0f} "
@@ -272,7 +342,7 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 查詢餘款失敗: {str(e)}")
             return 0.0
 
-    def get_deposit_ledger(self, room_number: str) -> pd.DataFrame:
+    def _get_deposit_ledger_uncached(self, room_number: str) -> pd.DataFrame:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -313,6 +383,10 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 查詢流水帳失敗: {str(e)}")
             return pd.DataFrame()
 
+    def get_deposit_ledger(self, room_number: str) -> pd.DataFrame:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_deposit_ledger(room_number, user_id, dev_mode)
+
     def delete_deposit_entry(self, entry_id: int) -> Tuple[bool, str]:
         try:
             with self.get_connection() as conn:
@@ -332,6 +406,7 @@ class ElectricityService(BaseDBService):
                     (entry_id,),
                 )
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("DELETE", "electricity_deposit_ledger", True, 1)
                 logger.info(
                     f"✅ 刪除記錄 ID {entry_id}: {room} {t} "
@@ -344,7 +419,7 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 刪除失敗: {str(e)}")
             return False, f"❌ {str(e)[:100]}"
 
-    def get_all_rooms_deposit_summary(self) -> pd.DataFrame:
+    def _get_all_rooms_deposit_summary_uncached(self) -> pd.DataFrame:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -375,6 +450,10 @@ class ElectricityService(BaseDBService):
             return pd.DataFrame()
 
     # ==================== 期間管理 ====================
+
+    def get_all_rooms_deposit_summary(self) -> pd.DataFrame:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_all_rooms_deposit_summary(user_id, dev_mode)
 
     def add_period(
         self,
@@ -425,6 +504,7 @@ class ElectricityService(BaseDBService):
                 period_id = cursor.fetchone()[0]
                 conn.commit()
 
+                clear_electricity_cache()
                 log_db_operation("INSERT", "electricity_periods", True, 1)
                 logger.info(
                     f"✅ 建立期間 ID {period_id}: {year}/{month_start}-{month_end}"
@@ -437,7 +517,7 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 建立失敗: {str(e)}")
             return False, f"❌ {str(e)[:100]}", None
 
-    def get_all_periods(self) -> List[Dict]:
+    def _get_all_periods_uncached(self) -> List[Dict]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -474,6 +554,10 @@ class ElectricityService(BaseDBService):
             log_db_operation("SELECT", "electricity_periods", False, error=str(e))
             logger.error(f"❌ 查詢失敗: {str(e)}")
             return []
+
+    def get_all_periods(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_all_periods(user_id, dev_mode)
 
     def get_period_by_id(self, period_id: int) -> Optional[Dict]:
         try:
@@ -535,6 +619,7 @@ class ElectricityService(BaseDBService):
                     "DELETE FROM electricity_periods WHERE id = %s", (period_id,)
                 )
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("DELETE", "electricity_periods", True, 1)
                 logger.info(f"✅ 刪除期間 ID: {period_id}")
                 return True, "✅ 已刪除期間"
@@ -568,6 +653,7 @@ class ElectricityService(BaseDBService):
                 if cursor.rowcount == 0:
                     return False, f"❌ 未找到期間 ID {period_id}"
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("UPDATE", "electricity_periods", True, 1)
                 logger.info(f"✅ 設定催繳日期: {remind_date} (期間 {period_id})")
                 return True, f"✅ 已設定催繳日期: {remind_date}"
@@ -608,7 +694,7 @@ class ElectricityService(BaseDBService):
             logger.error(f"❌ 查詢失敗: {str(e)}")
             return None
 
-    def get_all_readings(self, period_id: int) -> List[Dict]:
+    def _get_all_readings_uncached(self, period_id: int) -> List[Dict]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -638,6 +724,10 @@ class ElectricityService(BaseDBService):
             log_db_operation("SELECT", "electricity_readings", False, error=str(e))
             logger.error(f"❌ 查詢失敗: {str(e)}")
             return []
+
+    def get_all_readings(self, period_id: int) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_all_readings(period_id, user_id, dev_mode)
 
     def save_reading(
         self,
@@ -691,6 +781,7 @@ class ElectricityService(BaseDBService):
                     ),
                 )
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("INSERT", "electricity_readings", True, 1)
                 logger.info(
                     f"✅ {room} ({room_type}): {kwh_used}度 "
@@ -730,6 +821,7 @@ class ElectricityService(BaseDBService):
                 if cursor.rowcount == 0:
                     return False, f"❌ 找不到 {room_number} 的電費記錄（period_id={period_id}）"
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("UPDATE", "electricity_readings (mark_paid)", True, 1)
                 logger.info(f"✅ 電費已繳: {room_number} - ${paid_amount:,} (period {period_id})")
                 return True, f"✅ {room_number} 已標記為已繳"
@@ -762,6 +854,7 @@ class ElectricityService(BaseDBService):
                 if cursor.rowcount == 0:
                     return False, f"❌ 找不到 {room_number} 的電費記錄"
                 conn.commit()
+                clear_electricity_cache()
                 log_db_operation("UPDATE", "electricity_readings (mark_unpaid)", True, 1)
                 logger.info(f"✅ 電費取消已繳: {room_number} (period {period_id})")
                 return True, f"✅ {room_number} 已取消已繳狀態"
@@ -773,7 +866,7 @@ class ElectricityService(BaseDBService):
 
     # ==================== 計費記錄查詢 ====================
 
-    def get_payment_record(self, period_id: int) -> Optional[pd.DataFrame]:
+    def _get_payment_record_uncached(self, period_id: int) -> Optional[pd.DataFrame]:
         try:
             with self.get_connection() as conn:
                 cursor = conn.cursor()
@@ -825,6 +918,10 @@ class ElectricityService(BaseDBService):
             log_db_operation("SELECT", "electricity_readings", False, error=str(e))
             logger.error(f"❌ 查詢失敗: {str(e)}")
             return None
+
+    def get_payment_record(self, period_id: int) -> Optional[pd.DataFrame]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_payment_record(period_id, user_id, dev_mode)
 
     def get_period_records(self, period_id: int) -> pd.DataFrame:
         df = self.get_payment_record(period_id)

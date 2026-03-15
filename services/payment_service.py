@@ -1,5 +1,5 @@
 """
-租金管理服務 - v5.3
+租金管理服務 - v5.4
 ✅ 自動注入 user_id
 ✅ RLS Policy 兼容
 ✅ 認證權限檢查
@@ -12,6 +12,7 @@
 ✅ [FIX] create_monthly_schedule: rent_amount → rent, 移除不存在的 payment_method 欄位
 ✅ [NEW] create_monthly_schedule: due_date 從 tenants.rent_due_day 讀取（預設 1 號，移除 hardcode 5）
 ✅ [NEW v5.3] get_pending_notifications: 查詢待通知租金（供 views.notifications 使用）
+✅ [NEW v5.4] 高頻唯讀查詢加上 cache_data，寫入後自動清 cache
 """
 
 import calendar
@@ -20,7 +21,65 @@ from datetime import date
 from typing import Optional, Tuple, List, Dict
 
 from services.base_db import BaseDBService
+from services.cache_utils import cache_data, clear_cached_functions, get_cache_scope
 from services.logger import logger, log_db_operation
+
+
+@cache_data(ttl=60)
+def _cached_get_overdue_payments(user_id: str, dev_mode: bool) -> List[Dict]:
+    return PaymentService()._get_overdue_payments_uncached()
+
+
+@cache_data(ttl=60)
+def _cached_get_pending_notifications(user_id: str, dev_mode: bool) -> List[Dict]:
+    return PaymentService()._get_pending_notifications_uncached()
+
+
+@cache_data(ttl=300)
+def _cached_get_all_payments(user_id: str, dev_mode: bool) -> List[Dict]:
+    return PaymentService()._get_all_payments_uncached()
+
+
+@cache_data(ttl=60)
+def _cached_get_unpaid_payments(user_id: str, dev_mode: bool) -> List[Dict]:
+    return PaymentService()._get_unpaid_payments_uncached()
+
+
+@cache_data(ttl=300)
+def _cached_get_paid_payments(user_id: str, dev_mode: bool) -> List[Dict]:
+    return PaymentService()._get_paid_payments_uncached()
+
+
+@cache_data(ttl=300)
+def _cached_get_payments_by_period(
+    year: int,
+    month: int,
+    user_id: str,
+    dev_mode: bool,
+) -> List[Dict]:
+    return PaymentService()._get_payments_by_period_uncached(year, month)
+
+
+@cache_data(ttl=60)
+def _cached_get_monthly_summary(
+    year: int,
+    month: int,
+    user_id: str,
+    dev_mode: bool,
+) -> Dict:
+    return PaymentService()._get_monthly_summary_uncached(year, month)
+
+
+def clear_payment_cache() -> None:
+    clear_cached_functions(
+        _cached_get_overdue_payments,
+        _cached_get_pending_notifications,
+        _cached_get_all_payments,
+        _cached_get_unpaid_payments,
+        _cached_get_paid_payments,
+        _cached_get_payments_by_period,
+        _cached_get_monthly_summary,
+    )
 
 
 class PaymentService(BaseDBService):
@@ -154,7 +213,7 @@ class PaymentService(BaseDBService):
             logger.error(f"查詢失敗: {str(e)}")
             return None
 
-    def get_overdue_payments(self) -> List[Dict]:
+    def _get_overdue_payments_uncached(self) -> List[Dict]:
         """
         查詢逾期租金（自動過濾當前用戶）
         """
@@ -211,7 +270,7 @@ class PaymentService(BaseDBService):
             logger.error(f"查詢逾期租金失敗: {str(e)}")
             return []
 
-    def get_pending_notifications(self) -> List[Dict]:
+    def _get_pending_notifications_uncached(self) -> List[Dict]:
         """
         查詢待通知的租金項目（未繳 + 逾期），供 views.notifications 使用
         notification_type 說明：
@@ -272,7 +331,7 @@ class PaymentService(BaseDBService):
 
     # ==================== 高階查詢與摘要（給 views.rent 用）====================
 
-    def get_all_payments(self) -> List[Dict]:
+    def _get_all_payments_uncached(self) -> List[Dict]:
         """取得所有租金記錄（自動過濾當前用戶）"""
         try:
             with self.get_connection() as conn:
@@ -309,7 +368,7 @@ class PaymentService(BaseDBService):
             logger.error(f"取得所有租金記錄失敗: {e}")
             return []
 
-    def get_unpaid_payments(self) -> List[Dict]:
+    def _get_unpaid_payments_uncached(self) -> List[Dict]:
         """取得所有未繳租金（自動過濾當前用戶）"""
         try:
             with self.get_connection() as conn:
@@ -348,7 +407,7 @@ class PaymentService(BaseDBService):
             logger.error(f"取得未繳租金失敗: {e}")
             return []
 
-    def get_paid_payments(self) -> List[Dict]:
+    def _get_paid_payments_uncached(self) -> List[Dict]:
         """取得所有已繳租金（自動過濾當前用戶）"""
         try:
             with self.get_connection() as conn:
@@ -387,7 +446,7 @@ class PaymentService(BaseDBService):
             logger.error(f"取得已繳租金失敗: {e}")
             return []
 
-    def get_payments_by_period(self, year: int, month: int) -> List[Dict]:
+    def _get_payments_by_period_uncached(self, year: int, month: int) -> List[Dict]:
         """依年/月取得所有房間的租金記錄（本月摘要 tab 使用）"""
         try:
             with self.get_connection() as conn:
@@ -469,7 +528,7 @@ class PaymentService(BaseDBService):
             logger.error(f"取得房間租金失敗: {e}")
             return []
 
-    def get_monthly_summary(self, year: int, month: int) -> Dict:
+    def _get_monthly_summary_uncached(self, year: int, month: int) -> Dict:
         """本月摘要用的統計資料"""
         try:
             with self.get_connection() as conn:
@@ -532,6 +591,34 @@ class PaymentService(BaseDBService):
 
     # ==================== 新增操作（整合認證）====================
 
+    def get_overdue_payments(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_overdue_payments(user_id, dev_mode)
+
+    def get_pending_notifications(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_pending_notifications(user_id, dev_mode)
+
+    def get_all_payments(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_all_payments(user_id, dev_mode)
+
+    def get_unpaid_payments(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_unpaid_payments(user_id, dev_mode)
+
+    def get_paid_payments(self) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_paid_payments(user_id, dev_mode)
+
+    def get_payments_by_period(self, year: int, month: int) -> List[Dict]:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_payments_by_period(year, month, user_id, dev_mode)
+
+    def get_monthly_summary(self, year: int, month: int) -> Dict:
+        user_id, dev_mode = get_cache_scope(self)
+        return _cached_get_monthly_summary(year, month, user_id, dev_mode)
+
     def add_payment_schedule(
         self,
         room: str,
@@ -583,6 +670,7 @@ class PaymentService(BaseDBService):
                     (user_id, room, tenant_name, year, month, amount, payment_method, due_date),
                 )
 
+                clear_payment_cache()
                 log_db_operation("INSERT", "payment_schedule", True, 1)
                 logger.info(f"新增帳單: {room} {year}/{month} 金額 {amount:,.0f}")
                 return True, "新增成功"
@@ -675,6 +763,7 @@ class PaymentService(BaseDBService):
                     (user_id, room_number, tenant_name, year, month, rent_amount, due),
                 )
 
+                clear_payment_cache()
                 log_db_operation("INSERT", "payment_schedule (create_monthly)", True, 1)
                 logger.info(
                     f"建立排程: {room_number} {year}/{month} "
@@ -768,6 +857,8 @@ class PaymentService(BaseDBService):
                         logger.error(f"{schedule.get('room_number', '?')} 建立失敗: {e}")
                         fail_count += 1
 
+                if success_count > 0:
+                    clear_payment_cache()
                 log_db_operation("INSERT", "payment_schedule (batch)", True, success_count)
                 logger.info(
                     f"批量新增租金排程: 成功 {success_count} 筆, 跳過 {skip_count} 筆, 失敗 {fail_count} 筆"
@@ -833,6 +924,7 @@ class PaymentService(BaseDBService):
                 if cursor.rowcount == 0:
                     return False, f"租金記錄 ID {payment_id} 不存在或無權限"
 
+                clear_payment_cache()
                 log_db_operation("UPDATE", "payment_schedule", True, 1)
                 logger.info(f"標記已繳: ID {payment_id} 房間 {room} 金額 {actual_paid:,.0f}")
                 return True, "標記成功"
@@ -879,6 +971,8 @@ class PaymentService(BaseDBService):
                         logger.error(f"ID {payment_id} 標記失敗: {e}")
                         fail_count += 1
 
+                if success_count > 0:
+                    clear_payment_cache()
                 log_db_operation("UPDATE", "payment_schedule (batch)", True, success_count)
                 logger.info(f"批量標記已繳: 成功 {success_count} 筆, 失敗 {fail_count} 筆")
                 return {"success": success_count, "failed": fail_count}
@@ -917,6 +1011,7 @@ class PaymentService(BaseDBService):
                 if cursor.rowcount == 0:
                     return False, "記錄不存在、已繳款或無權限"
 
+                clear_payment_cache()
                 log_db_operation("UPDATE", "payment_schedule", True, 1)
                 logger.info(f"更新金額: ID {payment_id} 新金額 {new_amount:,.0f}")
                 return True, "更新成功"
@@ -963,6 +1058,7 @@ class PaymentService(BaseDBService):
                     params
                 )
 
+                clear_payment_cache()
                 log_db_operation("DELETE", "payment_schedule", True, 1)
                 logger.info(f"刪除帳單: ID {payment_id} 房間 {room} {year}/{month}")
                 return True, "刪除成功"
@@ -1210,7 +1306,7 @@ if __name__ == "__main__":
 
     service = PaymentService()
 
-    print("=== 測試租金服務 v5.3 ===\n")
+    print("=== 測試租金服務 v5.4 ===\n")
 
     print("0. 認證狀態:")
     print(f"   已登入: {service.is_authenticated()}")
