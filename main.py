@@ -1,6 +1,7 @@
 """
 幸福之家 Pro - 租賃管理系統
-Nordic Edition v15.3 (Service Architecture + Auth Gatekeeper + Cookie Persistence)
+Nordic Edition v15.4 (Service Architecture + Auth Gatekeeper + Cookie Persistence + Sentry Monitoring)
+[NEW v15.4] Optional Sentry monitoring bootstrap
 ✅ [FIX v15.3] 失效 refresh_token 不再於 rerun 中重複重試
 ✅ [FIX v15.2] render_menu() 加入 on_change callback → 修正「點一次沒反應」導航 bug
 ✅ v15.1 所有功能保留
@@ -13,6 +14,8 @@ from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 import streamlit as st
+
+from utils.sentry_setup import init_sentry
 
 # ============================================
 # 0. Environment Variables
@@ -64,7 +67,7 @@ key = "eyJhbGciOi..."
 
 APP_CONFIG = {
     "title":       get_env("APP_TITLE", "幸福之家 Pro"),
-    "version":     get_env("APP_VERSION", "v15.3"),
+    "version":     get_env("APP_VERSION", "v15.4"),
     "environment": get_env("ENVIRONMENT", "production"),
     "log_level":   get_env("LOG_LEVEL", "INFO"),
     "dev_mode":    get_env("DEV_MODE", "false").lower() == "true",
@@ -93,6 +96,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 logger.info(f"啟動應用程式: {APP_CONFIG['title']} {APP_CONFIG['version']}")
+init_sentry(APP_CONFIG, get_env, logger)
 
 # ============================================
 # 3. Load CSS

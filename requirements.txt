@@ -1,6 +1,6 @@
 # ====================================================
 # 幸福之家 Pro - 租賃管理系統
-# Requirements v15.2 (Nordic Edition)
+# Requirements v15.3 (Nordic Edition)
 # Updated: 2026-03-06
 # ====================================================
 
@@ -38,7 +38,7 @@ line-bot-sdk==3.11.0
 python-dotenv==1.0.0
 
 # ============== Optional: Error Monitoring ==============
-# sentry-sdk==2.23.0
+sentry-sdk==2.23.1
 
 # ============== Optional: Excel Export ==============
 openpyxl==3.1.2
