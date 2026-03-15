@@ -23,6 +23,18 @@ logger = _optional_import("services.logger", "logger")
 BaseDBService = _optional_import("services.base_db", "BaseDBService")
 TenantService = _optional_import("services.tenant_service", "TenantService")
 PaymentService = _optional_import("services.payment_service", "PaymentService")
+PaymentScheduleService = _optional_import(
+    "services.payment_service",
+    "PaymentScheduleService",
+)
+PaymentCollectionService = _optional_import(
+    "services.payment_service",
+    "PaymentCollectionService",
+)
+PaymentReminderService = _optional_import(
+    "services.payment_service",
+    "PaymentReminderService",
+)
 ElectricityService = _optional_import("services.electricity_service", "ElectricityService")
 ExpenseService = _optional_import("services.expense_service", "ExpenseService")
 SystemService = _optional_import("services.system_service", "SystemService")
@@ -36,6 +48,9 @@ __all__ = [
     "BaseDBService",
     "TenantService",
     "PaymentService",
+    "PaymentScheduleService",
+    "PaymentCollectionService",
+    "PaymentReminderService",
     "ElectricityService",
     "ExpenseService",
     "SystemService",
