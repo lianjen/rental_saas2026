@@ -35,6 +35,7 @@ from schemas.tenant import TenantCreate, TenantUpdate
 from services.tenant_service import TenantService
 from config.constants import ROOMS, PAYMENT
 from utils.rent_pricing import calc_effective_monthly_rent
+from utils.session_keys import SessionKeys
 
 try:
     from components.cards import section_header, empty_state, data_table
@@ -541,7 +542,7 @@ def render_edit_tab(tenant_service: TenantService):
                     logger.error(f"更新房客失敗: {str(e)}", exc_info=True)
 
             if delete_btn:
-                confirm_key = f"confirm_delete_{tenant_id}"
+                confirm_key = SessionKeys.confirm_delete(tenant_id)
                 if not st.session_state.get(confirm_key):
                     st.session_state[confirm_key] = True
                     st.warning("⚠️ 再次點擊「刪除」確認刪除房客")

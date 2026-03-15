@@ -38,9 +38,10 @@ from utils.navigation_state import (
     ELECTRICITY_TAB_CALCULATION,
     ELECTRICITY_TABS_KEY,
     MENU_DASHBOARD,
-    MENU_ELECTRICITY,
-    MENU_RENT,
-    RENT_DEFAULT_STATUS_FILTER_STATE,
+        MENU_ELECTRICITY,
+        MENU_RENT,
+        CURRENT_PERIOD_ID_STATE,
+        RENT_DEFAULT_STATUS_FILTER_STATE,
     RENT_DEFAULT_TAB_STATE,
     RENT_ROOM_FILTER_KEY,
     RENT_STATUS_FILTER_KEY,
@@ -226,7 +227,7 @@ def _navigate_to_electricity(default_period_id: Optional[int]) -> None:
         clear_keys=[ELECTRICITY_TABS_KEY],
         **{
             ELECTRICITY_DEFAULT_TAB_STATE: ELECTRICITY_TAB_CALCULATION,
-            "current_period_id": default_period_id,
+            CURRENT_PERIOD_ID_STATE: default_period_id,
         },
     )
     st.rerun()

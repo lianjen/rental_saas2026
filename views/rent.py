@@ -19,6 +19,7 @@ from typing import List, Dict
 import pandas as pd
 import logging
 from utils import navigation_state
+from utils.session_keys import SessionKeys
 
 logger = logging.getLogger(__name__)
 
@@ -142,15 +143,15 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
             help="選擇特定房間建立租金記錄"
         )
 
-    if 'batch_mode' not in st.session_state:
-        st.session_state.batch_mode = 'select'
+    if SessionKeys.RENT_BATCH_MODE not in st.session_state:
+        st.session_state[SessionKeys.RENT_BATCH_MODE] = "select"
 
     if mode_all:
-        st.session_state.batch_mode = 'all'
+        st.session_state[SessionKeys.RENT_BATCH_MODE] = "all"
         st.rerun()
 
     if mode_select:
-        st.session_state.batch_mode = 'select'
+        st.session_state[SessionKeys.RENT_BATCH_MODE] = "select"
         st.rerun()
 
     st.divider()
@@ -158,7 +159,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
     # === 房間選擇 ===
     selected_rooms = []
 
-    if st.session_state.batch_mode == 'select':
+    if st.session_state[SessionKeys.RENT_BATCH_MODE] == "select":
         st.markdown("### 🏠 選擇房間")
 
         selected_rooms = st.multiselect(
@@ -170,7 +171,7 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
                 f"{tenants_by_room[x].get('name', '未知')} "
                 f"(NT${tenants_by_room[x].get('rent', 0):,.0f}/月)"
             ),
-            key="selected_rooms_for_batch"
+            key=SessionKeys.RENT_SELECTED_ROOMS_FOR_BATCH
         )
 
         if not selected_rooms:
@@ -391,9 +392,9 @@ def render_batch_schedule_tab(payment_service: PaymentService, tenant_service: T
             "🔄 重置",
             width="stretch"
         ):
-            if 'selected_rooms_for_batch' in st.session_state:
-                del st.session_state['selected_rooms_for_batch']
-            st.session_state.batch_mode = 'select'
+            if SessionKeys.RENT_SELECTED_ROOMS_FOR_BATCH in st.session_state:
+                del st.session_state[SessionKeys.RENT_SELECTED_ROOMS_FOR_BATCH]
+            st.session_state[SessionKeys.RENT_BATCH_MODE] = "select"
             st.rerun()
 
 

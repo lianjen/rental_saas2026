@@ -11,6 +11,7 @@
 import streamlit as st
 from services.auth_service import AuthService
 from utils.session_manager import session_manager
+from utils.session_keys import SessionKeys
 import re
 from typing import Optional
 
@@ -174,7 +175,7 @@ def handle_register(email: str, password: str, confirm_password: str, name: str)
             st.info("💡 請使用您的帳號密碼登入")
         
         # 切換回登入模式
-        st.session_state["auth_mode"] = "login"
+        st.session_state[SessionKeys.AUTH_MODE] = "login"
         st.rerun()
     else:
         st.error(f"❌ {result['message']}")
@@ -214,8 +215,8 @@ def render():
     """渲染登入頁面"""
     
     # 初始化 auth_mode（登入/註冊/忘記密碼）
-    if "auth_mode" not in st.session_state:
-        st.session_state["auth_mode"] = "login"
+    if SessionKeys.AUTH_MODE not in st.session_state:
+        st.session_state[SessionKeys.AUTH_MODE] = "login"
     
     # 置中佈局
     col1, col2, col3 = st.columns([1, 2, 1])
@@ -239,7 +240,7 @@ def render():
         st.markdown("---")
         
         # ==================== 模式切換 ====================
-        mode = st.session_state["auth_mode"]
+        mode = st.session_state[SessionKeys.AUTH_MODE]
         
         # 標籤頁
         tab_col1, tab_col2, tab_col3 = st.columns(3)
@@ -250,7 +251,7 @@ def render():
                 use_container_width=True,
                 type="primary" if mode == "login" else "secondary"
             ):
-                st.session_state["auth_mode"] = "login"
+                st.session_state[SessionKeys.AUTH_MODE] = "login"
                 st.rerun()
         
         with tab_col2:
@@ -259,7 +260,7 @@ def render():
                 use_container_width=True,
                 type="primary" if mode == "register" else "secondary"
             ):
-                st.session_state["auth_mode"] = "register"
+                st.session_state[SessionKeys.AUTH_MODE] = "register"
                 st.rerun()
         
         with tab_col3:
@@ -268,7 +269,7 @@ def render():
                 use_container_width=True,
                 type="primary" if mode == "forgot" else "secondary"
             ):
-                st.session_state["auth_mode"] = "forgot"
+                st.session_state[SessionKeys.AUTH_MODE] = "forgot"
                 st.rerun()
         
         st.markdown("<br>", unsafe_allow_html=True)

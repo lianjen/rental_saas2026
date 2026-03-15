@@ -12,6 +12,7 @@ import logging
 
 from services.auth_service import AuthService
 from services.base_db import BaseDBService
+from utils.session_keys import SessionKeys
 
 try:
     from utils.session_manager import session_manager
@@ -24,7 +25,7 @@ logger = logging.getLogger(__name__)
 # ==================== 輔助函數 ====================
 
 def _get_current_user_id() -> str | None:
-    for key in ("user_id", "uid", "auth_user_id"):
+    for key in (SessionKeys.USER_ID, "uid", "auth_user_id"):
         uid = st.session_state.get(key)
         if uid:
             return uid
@@ -346,7 +347,7 @@ def render():
     if session_manager:
         user_role = session_manager.get_user_role()
     else:
-        user_role = st.session_state.get("user_role", "user")
+        user_role = st.session_state.get(SessionKeys.USER_ROLE, "user")
 
     if user_role != "admin":
         st.error("🔒 此頁面僅限管理員使用")

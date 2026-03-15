@@ -12,6 +12,8 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timedelta
 import logging
 
+from utils.session_keys import SessionKeys
+
 logger = logging.getLogger(__name__)
 
 
@@ -21,21 +23,21 @@ class SessionManager:
     # ==================== Session Key 常量 ====================
     
     # Supabase Auth 相关
-    ACCESS_TOKEN = "access_token"
-    REFRESH_TOKEN = "refresh_token"
-    EXPIRES_AT = "expires_at"
+    ACCESS_TOKEN = SessionKeys.ACCESS_TOKEN
+    REFRESH_TOKEN = SessionKeys.REFRESH_TOKEN
+    EXPIRES_AT = SessionKeys.EXPIRES_AT
     
     # 用户资料
-    USER_DATA = "user_data"
-    USER_ID = "user_id"
-    USER_EMAIL = "user_email"
-    USER_NAME = "user_name"
-    USER_ROLE = "user_role"
+    USER_DATA = SessionKeys.USER_DATA
+    USER_ID = SessionKeys.USER_ID
+    USER_EMAIL = SessionKeys.USER_EMAIL
+    USER_NAME = SessionKeys.USER_NAME
+    USER_ROLE = SessionKeys.USER_ROLE
     
     # Session 状态
-    IS_AUTHENTICATED = "is_authenticated"
-    LOGIN_TIME = "login_time"
-    LAST_ACTIVITY = "last_activity"
+    IS_AUTHENTICATED = SessionKeys.IS_AUTHENTICATED
+    LOGIN_TIME = SessionKeys.LOGIN_TIME
+    LAST_ACTIVITY = SessionKeys.LAST_ACTIVITY
     
     # 配置
     SESSION_TIMEOUT = 3600  # 1 小时无活动自动登出
@@ -412,7 +414,7 @@ class SessionManager:
             key: 资料键
             value: 资料值
         """
-        st.session_state[f"custom_{key}"] = value
+        st.session_state[SessionKeys.custom(key)] = value
     
     @staticmethod
     def get_custom_data(key: str, default: Any = None) -> Any:
@@ -426,7 +428,7 @@ class SessionManager:
         Returns:
             资料值 or 默认值
         """
-        return st.session_state.get(f"custom_{key}", default)
+        return st.session_state.get(SessionKeys.custom(key), default)
     
     @staticmethod
     def clear_custom_data(key: str):
@@ -436,7 +438,7 @@ class SessionManager:
         Args:
             key: 资料键
         """
-        custom_key = f"custom_{key}"
+        custom_key = SessionKeys.custom(key)
         if custom_key in st.session_state:
             del st.session_state[custom_key]
     

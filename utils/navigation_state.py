@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 
+from utils.session_keys import SessionKeys
+
 try:
     import streamlit as st  # type: ignore
 except ImportError:
@@ -17,10 +19,11 @@ MENU_DASHBOARD = "📊 儀表板"
 MENU_RENT = "💰 租金管理"
 MENU_ELECTRICITY = "⚡ 電費管理"
 
-DASHBOARD_FOCUS_SECTION_STATE = "dashboard_focus_section"
-RENT_DEFAULT_TAB_STATE = "rent_default_tab"
-RENT_DEFAULT_STATUS_FILTER_STATE = "rent_default_status_filter"
-ELECTRICITY_DEFAULT_TAB_STATE = "electricity_default_tab"
+DASHBOARD_FOCUS_SECTION_STATE = SessionKeys.DASHBOARD_FOCUS_SECTION
+RENT_DEFAULT_TAB_STATE = SessionKeys.RENT_DEFAULT_TAB
+RENT_DEFAULT_STATUS_FILTER_STATE = SessionKeys.RENT_DEFAULT_STATUS_FILTER
+ELECTRICITY_DEFAULT_TAB_STATE = SessionKeys.ELECTRICITY_DEFAULT_TAB
+CURRENT_PERIOD_ID_STATE = SessionKeys.CURRENT_PERIOD_ID
 
 RENT_TAB_BATCH = "📅 批量建立排程"
 RENT_TAB_SUMMARY = "📊 本月摘要"
@@ -44,7 +47,7 @@ ELECTRICITY_TABS_KEY = "electricity_main_tabs"
 
 def build_navigation_state(menu: str, **updates: Any) -> Dict[str, Any]:
     """Return the session_state updates for a CTA navigation event."""
-    state = {"current_menu": menu}
+    state = {SessionKeys.CURRENT_MENU: menu}
     for key, value in updates.items():
         if value is not None:
             state[key] = value

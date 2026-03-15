@@ -1,6 +1,7 @@
 import unittest
 
 from utils import navigation_state
+from utils.session_keys import SessionKeys
 
 
 class FakeStreamlit:
@@ -41,11 +42,14 @@ class NavigationStateTest(unittest.TestCase):
 
         self.assertNotIn("stale_key", fake_streamlit.session_state)
         self.assertEqual(
-            fake_streamlit.session_state["current_menu"],
+            fake_streamlit.session_state[SessionKeys.CURRENT_MENU],
             navigation_state.MENU_ELECTRICITY,
         )
-        self.assertEqual(fake_streamlit.session_state["current_period_id"], 9)
-        self.assertEqual(state["current_menu"], navigation_state.MENU_ELECTRICITY)
+        self.assertEqual(
+            fake_streamlit.session_state[navigation_state.CURRENT_PERIOD_ID_STATE],
+            9,
+        )
+        self.assertEqual(state[SessionKeys.CURRENT_MENU], navigation_state.MENU_ELECTRICITY)
 
     def test_resolve_default_label_falls_back_safely(self):
         options = ["A", "B", "C"]
