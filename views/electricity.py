@@ -1,10 +1,8 @@
 """
-電費管理 - v5.5.2
-✅ v5.5.1 所有功能保留
-✅ [FIX v5.5.2] 分攤度數不提前 round，金額最後才 round
-    - shared_per_room / shared_per_room_1f 保留浮點 (e.g. 111.2)
-    - round(total_kwh * unit_price) 最後才取整 → 消除 ±1 元誤差
-    - UI 顯示改用 round(..., 1) 呈現一位小數
+電費管理 - v5.5.3
+✅ v5.5.2 所有功能保留
+✅ [FIX v5.5.3] fallback data_table: use_container_width=True → width="stretch"
+    - 消除 Streamlit DeprecationWarning (will be removed after 2025-12-31)
 """
 
 import logging
@@ -40,7 +38,7 @@ except ImportError:
             st.caption(desc)
 
     def data_table(df, key="table"):
-        st.dataframe(df, use_container_width=True, key=key)
+        st.dataframe(df, width="stretch", key=key)
 
     def info_card(title, content, icon="", type="info"):
         st.info(f"{icon} {title}: {content}")
