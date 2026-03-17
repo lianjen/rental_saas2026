@@ -6,7 +6,7 @@
 ✅ 修正時間戳類型（str → datetime）
 ✅ 新增更多驗證規則
 """
-from pydantic import BaseModel, Field, field_validator, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from typing import Optional
 from datetime import date, datetime
 
@@ -118,8 +118,7 @@ class ExpenseResponse(ExpenseBase):
     created_at: datetime  # ✅ 修正：使用 datetime 而非 str
     updated_at: datetime  # ✅ 修正：使用 datetime 而非 str
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExpenseListItem(BaseModel):
@@ -131,8 +130,7 @@ class ExpenseListItem(BaseModel):
     expense_date: date
     room_number: Optional[str] = None
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExpenseSummary(BaseModel):
@@ -145,8 +143,7 @@ class ExpenseSummary(BaseModel):
     )
     average_expense: float = Field(description="平均支出金額")
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExpenseFilter(BaseModel):
