@@ -22,16 +22,21 @@ jobs:
       SUPABASE_PASSWORD: "test_password"
       LINE_CHANNEL_SECRET: "fake-secret"
       LINE_CHANNEL_ACCESS_TOKEN: "fake-token"
+      LANDLORD_LINE_USER_ID: "Ufakeuser"
+      SENTRY_DSN: ""
       ENVIRONMENT: "test"
+      LOG_LEVEL: "WARNING"
+      APP_TITLE: "rental_saas2026"
       APP_VERSION: "ci-test"
       PYTHONUTF8: "1"
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Set up Python 3.11
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
           cache: "pip"
