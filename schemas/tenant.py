@@ -1,4 +1,4 @@
-"""
+r"""
 房客 Pydantic Schema - v2.3 (pricing + v2 config + rent_due_day)
 ✅ 欄位名稱對應 DB 實際欄位（rent / deposit / lease_start / lease_end）
 ✅ 新增 base_rent / payment_cycle / annual_discount_months
