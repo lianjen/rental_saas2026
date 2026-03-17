@@ -5,7 +5,7 @@
 ✅ 修正欄位：rent_month → payment_year + payment_month
 ✅ 移除不存在的欄位：paid_date, notes
 """
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from typing import Optional
 from datetime import date, datetime
 
@@ -107,8 +107,7 @@ class PaymentResponse(PaymentBase):
     created_at: datetime
     updated_at: datetime
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PaymentListItem(BaseModel):
@@ -123,8 +122,7 @@ class PaymentListItem(BaseModel):
     status: str
     due_date: date
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PaymentSummary(BaseModel):
@@ -136,8 +134,7 @@ class PaymentSummary(BaseModel):
     overdue_count: int = Field(description="逾期筆數")
     collection_rate: float = Field(description="收繳率", ge=0, le=1)
     
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PaymentMarkPaid(BaseModel):
