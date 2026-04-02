@@ -110,16 +110,20 @@ def _load_db_config() -> dict:
     - 否則：使用環境變數 SUPABASE_*
     """
     if HAS_STREAMLIT and hasattr(st, "secrets"):
-        supa = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
-        return {
-            "host": supa.get("host"),
-            "port": supa.get("port", 5432),
-            "database": supa.get("database"),
-            "user": supa.get("user"),
-            "password": supa.get("password"),
-            "min_connections": 2,
-            "max_connections": 10,
-        }
+        try:
+            supa = st.secrets.get("supabase", {})  # type: ignore[attr-defined]
+            if supa:
+                return {
+                    "host": supa.get("host"),
+                    "port": supa.get("port", 5432),
+                    "database": supa.get("database"),
+                    "user": supa.get("user"),
+                    "password": supa.get("password"),
+                    "min_connections": 2,
+                    "max_connections": 10,
+                }
+        except Exception:
+            logger.debug("st.secrets unavailable, fallback to environment variables")
 
     # 非 Streamlit 環境：讀取環境變數
     return {

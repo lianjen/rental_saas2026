@@ -13,7 +13,7 @@ import json
 import requests
 import streamlit as st
 from typing import Optional, Dict, Tuple, List
-from datetime import datetime
+from datetime import datetime, date
 
 from services.base_db import BaseDBService
 from services.logger import logger, log_db_operation
@@ -324,6 +324,246 @@ class NotificationService(BaseDBService):
     # ──────────────────────────────────────────
     # 電費通知 (v4.7 三層獨立 connection)
     # ──────────────────────────────────────────
+
+    def _update_electricity_last_notified(self, electricity_reading_id: int) -> None:
+        """Update last_notified_at after a successful electricity reminder send."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE electricity_readings
+                    SET last_notified_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (electricity_reading_id,),
+                )
+        except Exception as e:
+            logger.warning(f"?? ?湔 last_notified_at 憭望?: {e}")
+
+    def _get_daily_electricity_reminder_candidates(
+        self,
+        run_date: date,
+    ) -> List[Dict]:
+        """Load unpaid electricity readings whose remind_start_date has arrived."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT
+                        er.id AS electricity_reading_id,
+                        er.period_id,
+                        er.room_number,
+                        COALESCE(er.amount_due, 0) AS amount_due,
+                        t.id AS tenant_id,
+                        t.name AS tenant_name,
+                        tc.line_user_id,
+                        ep.period_year,
+                        ep.period_month_start,
+                        ep.period_month_end,
+                        ep.remind_start_date
+                    FROM electricity_readings er
+                    JOIN electricity_periods ep
+                      ON ep.id = er.period_id
+                    LEFT JOIN tenants t
+                      ON er.room_number = t.room_number
+                     AND t.status = 'active'
+                    LEFT JOIN tenant_contacts tc
+                      ON t.id = tc.tenant_id
+                    WHERE ep.remind_start_date IS NOT NULL
+                      AND ep.remind_start_date <= %s
+                      AND COALESCE(er.payment_status, 'unpaid') = 'unpaid'
+                      AND COALESCE(er.amount_due, 0) > 0
+                      AND tc.line_user_id IS NOT NULL
+                      AND COALESCE(tc.notify_electricity, true) = true
+                      AND COALESCE(tc.is_verified, false) = true
+                    ORDER BY ep.remind_start_date, er.room_number
+                    """,
+                    (run_date,),
+                )
+                rows = cursor.fetchall()
+
+            candidates: List[Dict] = []
+            for row in rows:
+                candidates.append(
+                    {
+                        "electricity_reading_id": row[0],
+                        "period_id": row[1],
+                        "room_number": row[2],
+                        "amount_due": int(row[3] or 0),
+                        "tenant_id": row[4],
+                        "tenant_name": row[5],
+                        "line_user_id": row[6],
+                        "period_year": row[7],
+                        "period_month_start": row[8],
+                        "period_month_end": row[9],
+                        "remind_start_date": row[10],
+                    }
+                )
+
+            logger.info(
+                "[LINE] Electricity daily reminder candidates=%s run_date=%s",
+                len(candidates),
+                run_date.isoformat(),
+            )
+            return candidates
+
+        except Exception as e:
+            logger.error(f"???亥岷?餉祥催繳候選憭望?: {e}")
+            return []
+
+    def _has_sent_electricity_daily_reminder_today(
+        self,
+        electricity_reading_id: int,
+        run_date: date,
+    ) -> bool:
+        """Return True when this reading already received a daily reminder today."""
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    SELECT 1
+                    FROM notification_logs
+                    WHERE category = 'electricity'
+                      AND notification_type = 'daily_reminder'
+                      AND status = 'sent'
+                      AND sent_at::date = %s
+                      AND meta_json ->> 'electricity_reading_id' = %s
+                    LIMIT 1
+                    """,
+                    (run_date, str(electricity_reading_id)),
+                )
+                return cursor.fetchone() is not None
+        except Exception as e:
+            logger.warning(f"?? ?亥岷?餉祥催繳去重憭望?: {e}")
+            return False
+
+    def _build_daily_electricity_reminder_message(
+        self,
+        candidate: Dict,
+        run_date: date,
+    ) -> str:
+        """Build the daily overdue electricity reminder message."""
+        remind_start = candidate.get("remind_start_date")
+        if isinstance(remind_start, datetime):
+            remind_start_date = remind_start.date()
+        elif isinstance(remind_start, date):
+            remind_start_date = remind_start
+        else:
+            remind_start_date = run_date
+
+        overdue_days = max((run_date - remind_start_date).days + 1, 1)
+        period_text = (
+            f"{candidate['period_year']}/"
+            f"{candidate['period_month_start']}-{candidate['period_month_end']}"
+        )
+
+        return (
+            f"?? ?餉祥催繳提醒\n\n"
+            f"?輯?嚗?{candidate['room_number']}\n"
+            f"蝘恥嚗?{candidate['tenant_name']}\n"
+            f"??嚗?{period_text}\n"
+            f"??嚗T${candidate['amount_due']:,}\n"
+            f"?暹?憭拇嚗?{overdue_days} 憭?\n\n"
+            f"此通知自 {remind_start_date.isoformat()} 開始每日提醒一次。\n"
+            f"如已繳費，請忽略此訊息或通知房東協助確認。"
+        )
+
+    def run_daily_electricity_reminders(
+        self,
+        run_date: Optional[date] = None,
+    ) -> Tuple[bool, str, Dict[str, int]]:
+        """
+        Send electricity overdue reminders once per day after remind_start_date.
+
+        This method is designed for cron / scheduler execution.
+        """
+        target_date = run_date or datetime.now().date()
+        candidates = self._get_daily_electricity_reminder_candidates(target_date)
+
+        summary = {
+            "checked": len(candidates),
+            "sent": 0,
+            "skipped": 0,
+            "failed": 0,
+        }
+
+        if not candidates:
+            message = f"? {target_date.isoformat()} ?餉祥催繳無待發送對象"
+            logger.info(message)
+            return True, message, summary
+
+        for candidate in candidates:
+            reading_id = int(candidate["electricity_reading_id"])
+
+            if self._has_sent_electricity_daily_reminder_today(reading_id, target_date):
+                summary["skipped"] += 1
+                logger.info(
+                    "[LINE] Skip duplicate electricity daily reminder - reading_id=%s date=%s",
+                    reading_id,
+                    target_date.isoformat(),
+                )
+                continue
+
+            message = self._build_daily_electricity_reminder_message(candidate, target_date)
+            period_text = (
+                f"{candidate['period_year']}/"
+                f"{candidate['period_month_start']}-{candidate['period_month_end']}"
+            )
+            meta_json = json.dumps(
+                {
+                    "period_id": candidate["period_id"],
+                    "electricity_reading_id": reading_id,
+                    "amount": int(candidate["amount_due"]),
+                    "period_text": period_text,
+                    "tenant_id": candidate["tenant_id"],
+                    "tenant_name": candidate["tenant_name"],
+                    "remind_start_date": str(candidate["remind_start_date"]),
+                    "run_date": target_date.isoformat(),
+                },
+                ensure_ascii=False,
+            )
+
+            ok = self.send_line_message(candidate["line_user_id"], message)
+            self._write_notification_log(
+                "electricity",
+                "tenant",
+                candidate["line_user_id"],
+                candidate["room_number"],
+                "daily_reminder",
+                f"{period_text} ?餉祥催繳提醒",
+                message,
+                "line",
+                "sent" if ok else "failed",
+                None if ok else "LINE API ??憭望?",
+                meta_json,
+            )
+
+            if ok:
+                summary["sent"] += 1
+                self._update_electricity_last_notified(reading_id)
+                logger.info(
+                    "[LINE] Electricity daily reminder sent - room=%s period_id=%s",
+                    candidate["room_number"],
+                    candidate["period_id"],
+                )
+            else:
+                summary["failed"] += 1
+                logger.warning(
+                    "[LINE] Electricity daily reminder failed - room=%s period_id=%s",
+                    candidate["room_number"],
+                    candidate["period_id"],
+                )
+
+        summary_msg = (
+            f"?餉祥每日催繳完成: checked={summary['checked']}, "
+            f"sent={summary['sent']}, skipped={summary['skipped']}, "
+            f"failed={summary['failed']}"
+        )
+        logger.info(summary_msg)
+        return True, summary_msg, summary
 
     def send_electricity_bill_notification(
         self,
